@@ -2,7 +2,7 @@
 
 
 ## 🧑‍💻 Team Members
-- Aswin Krishna M
+- Aswin Krishna Mahadevan
 - Meher Changalani  
 - Mohammad Hafeez Khan  
 - Udit Thakur  
