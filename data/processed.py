@@ -3,6 +3,10 @@ import os
 import random
 import torch
 
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 from data.amazon import AmazonReviews
 from data.ml1m import RawMovieLens1M
 from data.ml32m import RawMovieLens32M

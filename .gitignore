@@ -1,3 +1,7 @@
+*.job
+
+logs/
+
 __pycache__
 dataset
 out
