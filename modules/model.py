@@ -1,3 +1,12 @@
+"""
+Encoder-Decoder model for retrieval tasks with Transformer architecture.
+This model supports both jagged and padded input formats, allowing for flexible
+handling of variable-length sequences. It includes mechanisms for embedding
+semantic IDs, user IDs, and positional encodings, and is designed to be used
+for both training and inference tasks, including generation of next semantic IDs.
+"""
+
+# imports
 import gin
 import torch
 

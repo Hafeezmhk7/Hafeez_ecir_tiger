@@ -69,6 +69,7 @@ def train(
         raise Exception(f"Dataset currently not supported: {dataset}.")
 
     if wandb_logging:
+        # get local scope parameters for logging
         params = locals()
 
     accelerator = Accelerator(
@@ -80,7 +81,9 @@ def train(
 
     if wandb_logging and accelerator.is_main_process:
         wandb.login()
-        run = wandb.init(project="gen-retrieval-decoder-training", config=params)
+        run = wandb.init(entity="RecSys-UvA",
+                         project="gen-retrieval-decoder-training", 
+                         config=params)
 
     item_dataset = (
         ItemData(

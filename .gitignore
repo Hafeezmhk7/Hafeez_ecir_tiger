@@ -1,6 +1,7 @@
 __pycache__
 dataset
 out
+logdir
 wandb
 trained_models/transformer*
 tl_out

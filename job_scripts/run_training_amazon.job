@@ -4,7 +4,7 @@
 #SBATCH --gpus=1
 #SBATCH --job-name=train_amazon
 #SBATCH --time=12:00:00
-#SBATCH --output=./slurm_out/train/amazon_%j.out
+#SBATCH --output=./slurm_output/train/amazon_%j.out
 
 #exit if an error occurs
 set -e
@@ -16,4 +16,4 @@ module load CUDA/12.6.0
 
 source activate rq-vae
 
-python train_rqvae.py configs/decoder_amazon.gin
+python train_rqvae.py configs/rqvae_amazon.gin
