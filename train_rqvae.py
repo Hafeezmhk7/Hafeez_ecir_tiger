@@ -165,7 +165,7 @@ def train_iteration(
             
             # log metrics
             if wandb_logging:
-                wandb.log({**train_log, **eval_log})
+                wandb.log({**train_log, **eval_log}, step=iteration+1)
                 
             model.train()  # switch back to training mode after validation
 
@@ -230,7 +230,7 @@ def train(
     # create logdir if not exists
     uid = str(int(time.time()))
     logger.info(f"Session Started with UID '{uid}' | Dataset '{dataset_folder}' | Split '{dataset_split}'")
-    log_dir = os.path.join(os.path.expanduser("~"), log_dir, uid)
+    log_dir = os.path.join(os.path.expanduser("~"), log_dir, dataset_split, uid)
     os.makedirs(log_dir, exist_ok=True)
     
     # setup accelerator and device

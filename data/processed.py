@@ -11,6 +11,10 @@ from enum import Enum
 from torch import Tensor
 from torch.utils.data import Dataset
 from typing import Optional
+import logging
+
+# fetch logger
+logger = logging.getLogger("recsys_logger")
 
 PROCESSED_MOVIE_LENS_SUFFIX = "/processed/data.pt"
 

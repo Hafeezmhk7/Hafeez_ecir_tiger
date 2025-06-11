@@ -16,4 +16,8 @@ module load CUDA/12.6.0
 
 source activate rq-vae
 
+# train rq-vae
 python train_rqvae.py configs/rqvae_amazon.gin
+
+# train decoder
+# python train_decoder.py configs/decoder_amazon.gin

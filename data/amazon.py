@@ -17,6 +17,10 @@ from torch_geometric.io import fs
 from typing import Callable
 from typing import List
 from typing import Optional, Dict, Union
+import logging
+
+# fetch logger
+logger = logging.getLogger("recsys_logger")
 
 
 def parse(path):
