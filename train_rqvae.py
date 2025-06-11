@@ -94,9 +94,9 @@ def train_iteration(
         print_rec_loss = np.mean(losses[1])
         print_vae_loss = np.mean(losses[2])
 
-    pbar.set_description(
-        f"loss: {print_loss:.4f}, rl: {print_rec_loss:.4f}, vl: {print_vae_loss:.4f}"
-    )
+        pbar.set_description(
+            f"loss: {print_loss:.4f}, rl: {print_rec_loss:.4f}, vl: {print_vae_loss:.4f}"
+        )
 
     # autograd
     accelerator.wait_for_everyone()
@@ -126,20 +126,20 @@ def train_iteration(
     # evaluate model
     eval_log = {}
     if accelerator.is_main_process:
-        if ((iteration + 1) % eval_every == 0 or iteration + 1 == iterations):
+        if ((iteration + 1) % eval_every == 0 or (iteration + 1) == iterations):
             logger.info('Evaluation Started!')
             eval_metrics = evaluate(model, eval_dataloader, device, eval_log, t=t)
             eval_log.update(eval_metrics)
 
             # save model checkpoint
-            if (iter + 1) % save_model_every == 0 or iter + 1 == iterations:
+            if ((iteration + 1) % save_model_every == 0 or (iteration + 1) == iterations):
                 state = {
                     "iteration": iteration,
                     "model": model.state_dict(),
                     "model_config": model.config,
                     "optimizer": optimizer.state_dict(),
                 }
-                torch.save(state, log_dir + f"checkpoint_{iteration}.pt")
+                torch.save(state, f"{log_dir}/checkpoint_{iteration+1}.pt")
                 logger.info(f'Iteration {iteration}: Model saved.')
 
             # log entropy and duplicates
@@ -169,7 +169,7 @@ def train_iteration(
                 
             model.train()  # switch back to training mode after validation
 
-    return train_log, eval_log
+    return
 
 
 def evaluate(model, eval_dataloader, device, eval_log, t=0.2):
@@ -286,7 +286,7 @@ def train(
             split=dataset_split,
         )
     )
-    describe_dataloader(eval_dataloader, eval_sampler, title="Train DataLoader Summary")
+    describe_dataloader(eval_dataloader, eval_sampler, title="Eval DataLoader Summary")
     
     train_dataloader = accelerator.prepare(train_dataloader)
     # TODO: Investigate bug with prepare eval_dataloader
