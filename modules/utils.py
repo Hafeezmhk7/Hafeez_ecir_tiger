@@ -110,7 +110,7 @@ def compute_debug_metrics(
     batch: TokenizedSeqBatch, model_output=None, prefix: str = ""
 ) -> dict:
     seq_lengths = batch.seq_mask.sum(axis=1).to(torch.float32)
-    prefix = prefix + "_"
+    prefix = prefix + "/"
     debug_metrics = {
         prefix
         + f"seq_length_p{q}": torch.quantile(seq_lengths, q=q).detach().cpu().item()

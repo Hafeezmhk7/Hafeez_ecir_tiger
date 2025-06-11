@@ -3,26 +3,169 @@ import os
 import gin
 import torch
 import wandb
-
+import time
 from accelerate import Accelerator
-from data.processed import ItemData
-from data.processed import RecDataset
-from data.processed import SeqData
-from data.utils import batch_to
-from data.utils import cycle
-from data.utils import next_batch
+from data.processed import ItemData, RecDataset, SeqData
+from data.utils import batch_to, cycle, next_batch, describe_dataloader
 from evaluate.metrics import TopKAccumulator
 from modules.model import EncoderDecoderRetrievalModel
 from modules.scheduler.inv_sqrt import InverseSquareRootScheduler
 from modules.tokenizer.semids import SemanticIdTokenizer
-from modules.utils import compute_debug_metrics
-from modules.utils import parse_config
-from huggingface_hub import login
+from modules.utils import compute_debug_metrics, parse_config, display_args, display_metrics, display_model_summary
 from torch.optim import AdamW
-from torch.utils.data import BatchSampler
-from torch.utils.data import DataLoader
-from torch.utils.data import RandomSampler
+from torch.utils.data import BatchSampler, DataLoader, RandomSampler
 from tqdm import tqdm
+from rich.logging import RichHandler
+import logging
+
+
+# logging
+os.environ["WANDB__SERVICE_WAIT"] = "300"
+
+# create logger
+logger = logging.getLogger("recsys_logger")
+logger.setLevel(logging.INFO)
+
+if not logger.hasHandlers():
+    handler = RichHandler(show_path=False)
+    logger.addHandler(handler)
+    logger.propagate = False
+
+
+def train_iteration(model, optimizer, tokenizer,
+                    accelerator, lr_scheduler, metrics_accumulator,
+                    train_dataloader, eval_dataloader,
+                    gradient_accumulate_every, device,
+                    pbar, log_dir, iteration, iterations,
+                    save_model_every, log_every, eval_every, 
+                    partial_eval_every, full_eval_every,
+                    wandb_logging):
+    # set model to training mode
+    model.train()
+    # set variables
+    total_loss = 0
+    debug_metrics = []
+    num_batches = 0
+
+    optimizer.zero_grad()
+    for _ in range(gradient_accumulate_every):
+        data = next_batch(train_dataloader, device)
+        tokenized_data = tokenizer(data)
+
+        with accelerator.autocast():
+            model_output = model(tokenized_data)
+            loss = model_output.loss / gradient_accumulate_every
+            total_loss += loss
+            num_batches += 1
+
+        if accelerator.is_main_process:
+            train_debug_metrics = compute_debug_metrics(
+                tokenized_data, model_output, "train"
+            )
+            debug_metrics.append(train_debug_metrics)
+
+    accelerator.backward(total_loss)
+    assert model.sem_id_embedder.emb.weight.grad is not None
+
+    pbar.set_description(f"loss: {total_loss.item():.4f}")
+    # autograd stuff
+    accelerator.wait_for_everyone()
+    optimizer.step()
+    lr_scheduler.step()
+    accelerator.wait_for_everyone()
+    
+    if accelerator.is_main_process:
+        if ((iteration + 1) % log_every == 0 or iteration + 1 == iterations):
+            train_log = {
+                "train/learning_rate": optimizer.param_groups[0]["lr"],
+                "train/total_loss": total_loss.cpu().item(),
+            }
+            # average debug metrics
+            averaged_debug_metrics = {}
+            for key in debug_metrics[0].keys():
+                averaged_debug_metrics[key] = sum(d[key] for d in debug_metrics) / num_batches
+            train_log.update(averaged_debug_metrics)
+
+            # print train metrics
+            display_metrics(metrics=train_log, title="Training Metrics")
+            
+            # log metrics
+            if wandb_logging:
+                wandb.log(train_log, step=iteration+1)
+
+    # evaluate model
+    if accelerator.is_main_process:
+        if ((iteration + 1) % eval_every == 0 or (iteration + 1) == iterations):
+            logger.info('Evaluation Started!')
+            eval_log = evaluate(model, eval_dataloader, device, tokenizer, metrics_accumulator)
+            
+            # save model checkpoint
+            if ((iteration + 1) % save_model_every == 0 or (iteration + 1) == iterations):
+                state = {
+                    "iteration": iteration,
+                    "model": model.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "scheduler": lr_scheduler.state_dict(),
+                }
+                torch.save(state, f"{log_dir}/checkpoint_{iteration+1}.pt")
+                logger.info(f'Iteration {iteration}: Model saved.')
+            
+            # print eval metrics
+            display_metrics(eval_log, title="Evaluation Metrics")
+            
+            # log metrics
+            if wandb_logging:
+                wandb.log(eval_log, step=iteration+1)
+                
+            model.train()  # switch back to training mode after validation
+
+    return
+
+
+def evaluate(model, eval_dataloader, device, tokenizer, metrics_accumulator):
+    # set model to evaluation mode
+    model.eval()
+    model.enable_generation = False
+    total_loss = 0
+    debug_metrics = []
+    num_batches = 0
+    pbar = tqdm(eval_dataloader, desc=f"Eval")
+    for batch in pbar:
+        data = batch_to(batch, device)
+        tokenized_data = tokenizer(data)
+        # debug metrics
+        with torch.no_grad():
+            model_output_eval = model(tokenized_data)
+            loss = model_output_eval.loss.detach().cpu().item()
+            total_loss += loss
+            num_batches += 1
+            eval_debug_metrics = compute_debug_metrics(
+                tokenized_data, model_output_eval, "eval"
+            )
+            debug_metrics.append(eval_debug_metrics)
+        # eval metrics
+        generated = model.generate_next_sem_id(
+            tokenized_data, top_k=True, temperature=1
+        )
+        actual, top_k = tokenized_data.sem_ids_fut, generated.sem_ids
+        # calculate IR measures
+        metrics_accumulator.accumulate(
+            actual=actual, top_k=top_k, tokenizer=tokenizer
+        )
+        
+    eval_metrics = metrics_accumulator.reduce()
+    # reset the metrics accumulator
+    metrics_accumulator.reset()
+    
+    # average debug metrics
+    averaged_debug_metrics = {}
+    for key in debug_metrics[0].keys():
+        averaged_debug_metrics[key] = sum(d[key] for d in debug_metrics) / num_batches
+
+    averaged_debug_metrics["eval/loss"] = total_loss / num_batches
+    eval_metrics.update(averaged_debug_metrics)
+            
+    return eval_metrics
 
 
 @gin.configurable
@@ -32,7 +175,7 @@ def train(
     learning_rate=0.001,
     weight_decay=0.01,
     dataset_folder="dataset/ml-1m",
-    save_dir_root="out/",
+    log_dir="out/",
     dataset=RecDataset.ML_1M,
     pretrained_rqvae_path=None,
     pretrained_decoder_path=None,
@@ -42,6 +185,8 @@ def train(
     force_dataset_process=False,
     mixed_precision_type="fp16",
     gradient_accumulate_every=1,
+    log_every=5000,
+    eval_every=5000,
     save_model_every=1000000,
     partial_eval_every=1000,
     full_eval_every=10000,
@@ -59,32 +204,36 @@ def train(
     attn_embed_dim=64,
     attn_layers=4,
     dataset_split="beauty",
-    push_vae_to_hf=False,
     train_data_subsample=True,
     model_jagged_mode=True,
-    vae_hf_model_name="edobotta/rqvae-amazon-beauty",
     category=None,
+    debug=False,
 ):
+
+    # create logdir if not exists
+    uid = str(int(time.time()))
+    logger.info(
+        f"Session Started with UID '{uid}' | Dataset '{dataset_folder}' | Split '{dataset_split}'")
+    log_dir = os.path.join(os.path.expanduser("~"), log_dir, dataset_split, uid)
+    os.makedirs(log_dir, exist_ok=True)
+
     if dataset != RecDataset.AMAZON:
         raise Exception(f"Dataset currently not supported: {dataset}.")
 
-    if wandb_logging:
-        # get local scope parameters for logging
-        params = locals()
-
+    # setup accelerator and device
     accelerator = Accelerator(
         split_batches=split_batches,
         mixed_precision=mixed_precision_type if amp else "no",
     )
-
     device = accelerator.device
+    display_args(locals())
 
-    if wandb_logging and accelerator.is_main_process:
-        wandb.login()
-        run = wandb.init(entity="RecSys-UvA",
-                         project="gen-retrieval-decoder-training", 
-                         config=params)
+    # logging
+    if wandb_logging:
+        # get local scope parameters for logging
+        params = locals()
 
+    # load items dataset
     item_dataset = (
         ItemData(
             root=dataset_folder,
@@ -101,7 +250,7 @@ def train(
             category=category,
         )
     )
-
+    # load train dataset
     train_dataset = SeqData(
         root=dataset_folder,
         dataset=dataset,
@@ -109,6 +258,12 @@ def train(
         subsample=train_data_subsample,
         split=dataset_split,
     )
+    train_dataloader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True)
+    describe_dataloader(train_dataloader, title="Train DataLoader Summary")
+    train_dataloader = cycle(train_dataloader)
+
+    # load eval dataset
     eval_dataset = SeqData(
         root=dataset_folder,
         dataset=dataset,
@@ -116,16 +271,14 @@ def train(
         subsample=False,
         split=dataset_split,
     )
-
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-
-    train_dataloader = cycle(train_dataloader)
-    eval_dataloader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=True)
-
+    eval_dataloader = DataLoader(
+        eval_dataset, batch_size=batch_size, shuffle=True)
+    describe_dataloader(eval_dataloader, title="Eval DataLoader Summary")
     train_dataloader, eval_dataloader = accelerator.prepare(
         train_dataloader, eval_dataloader
     )
 
+    # load rq-vae tokenizer
     tokenizer = SemanticIdTokenizer(
         input_dim=vae_input_dim,
         hidden_dims=vae_hidden_dims,
@@ -140,10 +293,7 @@ def train(
     tokenizer = accelerator.prepare(tokenizer)
     tokenizer.precompute_corpus_ids(item_dataset)
 
-    if push_vae_to_hf:
-        login()
-        tokenizer.rq_vae.push_to_hub(vae_hf_model_name)
-
+    # load model
     model = EncoderDecoderRetrievalModel(
         embedding_dim=decoder_embed_dim,
         attn_dim=attn_embed_dim,
@@ -156,15 +306,28 @@ def train(
         max_pos=train_dataset.max_seq_len * tokenizer.sem_ids_dim,
         jagged_mode=model_jagged_mode,
     )
+    display_model_summary(model, device)
 
+    # load optimizer and scheduler
     optimizer = AdamW(
         params=model.parameters(), lr=learning_rate, weight_decay=weight_decay
     )
+    lr_scheduler = InverseSquareRootScheduler(
+        optimizer=optimizer, warmup_steps=10000)
 
-    lr_scheduler = InverseSquareRootScheduler(optimizer=optimizer, warmup_steps=10000)
+    if wandb_logging and accelerator.is_main_process:
+        # wandb.login()
+        run_name = f"decoder-{dataset.name.lower()}-{dataset_split}" + \
+            "/" + uid
+        run = wandb.init(entity="RecSys-UvA",
+                         name=run_name,
+                         project="gen-ir-decoder-training",
+                         config=params)
 
     start_iter = 0
     if pretrained_decoder_path is not None:
+        logger.info(
+            f"[Resume Training] Loading pretrained Decoder from {pretrained_decoder_path}.")
         checkpoint = torch.load(
             pretrained_decoder_path, map_location=device, weights_only=False
         )
@@ -172,118 +335,42 @@ def train(
         optimizer.load_state_dict(checkpoint["optimizer"])
         if "scheduler" in checkpoint:
             lr_scheduler.load_state_dict(checkpoint["scheduler"])
-        start_iter = checkpoint["iter"] + 1
+        start_iter = checkpoint["iteration"] + 1
 
-    model, optimizer, lr_scheduler = accelerator.prepare(model, optimizer, lr_scheduler)
+    model, optimizer, lr_scheduler = accelerator.prepare(
+        model, optimizer, lr_scheduler)
 
     metrics_accumulator = TopKAccumulator(ks=[1, 5, 10])
-    num_params = sum(p.numel() for p in model.parameters())
-    print(f"Device: {device}, Num Parameters: {num_params}")
+
+    # starting the training
+    logger.info(f"Training Started! - Debugging: {debug}")
+
     with tqdm(
         initial=start_iter,
         total=start_iter + iterations,
         disable=not accelerator.is_main_process,
     ) as pbar:
-        for iter in range(iterations):
-            model.train()
-            total_loss = 0
-            optimizer.zero_grad()
-            for _ in range(gradient_accumulate_every):
-                data = next_batch(train_dataloader, device)
-                tokenized_data = tokenizer(data)
-
-                with accelerator.autocast():
-                    model_output = model(tokenized_data)
-                    loss = model_output.loss / gradient_accumulate_every
-                    total_loss += loss
-
-                if wandb_logging and accelerator.is_main_process:
-                    train_debug_metrics = compute_debug_metrics(
-                        tokenized_data, model_output
-                    )
-
-                accelerator.backward(total_loss)
-                assert model.sem_id_embedder.emb.weight.grad is not None
-
-            pbar.set_description(f"loss: {total_loss.item():.4f}")
-
-            accelerator.wait_for_everyone()
-
-            optimizer.step()
-            lr_scheduler.step()
-
-            accelerator.wait_for_everyone()
-
-            if (iter + 1) % partial_eval_every == 0:
-                model.eval()
-                model.enable_generation = False
-                for batch in eval_dataloader:
-                    data = batch_to(batch, device)
-                    tokenized_data = tokenizer(data)
-
-                    with torch.no_grad():
-                        model_output_eval = model(tokenized_data)
-
-                    if wandb_logging and accelerator.is_main_process:
-                        eval_debug_metrics = compute_debug_metrics(
-                            tokenized_data, model_output_eval, "eval"
-                        )
-                        eval_debug_metrics["eval_loss"] = (
-                            model_output_eval.loss.detach().cpu().item()
-                        )
-                        wandb.log(eval_debug_metrics)
-
-            if (iter + 1) % full_eval_every == 0:
-                model.eval()
-                model.enable_generation = True
-                with tqdm(
-                    eval_dataloader,
-                    desc=f"Eval {iter+1}",
-                    disable=not accelerator.is_main_process,
-                ) as pbar_eval:
-                    for batch in pbar_eval:
-                        data = batch_to(batch, device)
-                        tokenized_data = tokenizer(data)
-
-                        generated = model.generate_next_sem_id(
-                            tokenized_data, top_k=True, temperature=1
-                        )
-                        actual, top_k = tokenized_data.sem_ids_fut, generated.sem_ids
-                        # add the tokinzer
-                        metrics_accumulator.accumulate(
-                            actual=actual, top_k=top_k, tokenizer=tokenizer
-                        )
-                eval_metrics = metrics_accumulator.reduce()
-
-                print(eval_metrics)
-                if accelerator.is_main_process and wandb_logging:
-                    wandb.log(eval_metrics)
-
-                metrics_accumulator.reset()
-
-            if accelerator.is_main_process:
-                if (iter + 1) % save_model_every == 0 or iter + 1 == iterations:
-                    state = {
-                        "iter": iter,
-                        "model": model.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                        "scheduler": lr_scheduler.state_dict(),
-                    }
-
-                    if not os.path.exists(save_dir_root):
-                        os.makedirs(save_dir_root)
-
-                    torch.save(state, save_dir_root + f"checkpoint_{iter}.pt")
-
-                if wandb_logging:
-                    wandb.log(
-                        {
-                            "learning_rate": optimizer.param_groups[0]["lr"],
-                            "total_loss": total_loss.cpu().item(),
-                            **train_debug_metrics,
-                        }
-                    )
-
+        for iter_ in range(start_iter, start_iter + 1 + iterations):
+            train_iteration(model=model,
+                            optimizer=optimizer,
+                            tokenizer=tokenizer,
+                            accelerator=accelerator,
+                            lr_scheduler=lr_scheduler,
+                            metrics_accumulator=metrics_accumulator,
+                            train_dataloader=train_dataloader,
+                            eval_dataloader=eval_dataloader,
+                            gradient_accumulate_every=gradient_accumulate_every,
+                            device=device,
+                            pbar=pbar,
+                            log_dir=log_dir,
+                            iteration=iter_,
+                            iterations=iterations,
+                            save_model_every=save_model_every,
+                            log_every=log_every,
+                            eval_every=eval_every,
+                            partial_eval_every=partial_eval_every,
+                            full_eval_every=full_eval_every,
+                            wandb_logging=wandb_logging)
             pbar.update(1)
 
     if wandb_logging:

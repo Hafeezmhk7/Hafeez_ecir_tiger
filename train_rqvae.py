@@ -58,8 +58,8 @@ def train_iteration(
     ): 
     # set model to training mode
     model.train()
-    total_loss = 0
     # set variables
+    total_loss = 0
     eval_log = {}
 
     if iteration == 0 and use_kmeans_init:
@@ -104,7 +104,7 @@ def train_iteration(
     accelerator.wait_for_everyone()
 
     # compute logs depending on training model_output here to avoid cuda graph overwrite from eval graph.
-    if accelerator.is_main_process and wandb_logging:
+    if accelerator.is_main_process:
         if ((iteration + 1) % log_every == 0 or iteration + 1 == iterations):
             emb_norms_avg = model_output.embs_norm.mean(axis=0)
             emb_norms_avg_log = {
@@ -122,14 +122,16 @@ def train_iteration(
             }
             # print train metrics
             display_metrics(metrics=train_log, title="Training Metrics")
+            
+            # log metrics
+            if wandb_logging:
+                wandb.log(train_log, step=iteration+1)
     
     # evaluate model
-    eval_log = {}
     if accelerator.is_main_process:
         if ((iteration + 1) % eval_every == 0 or (iteration + 1) == iterations):
             logger.info('Evaluation Started!')
-            eval_metrics = evaluate(model, eval_dataloader, device, eval_log, t=t)
-            eval_log.update(eval_metrics)
+            eval_log = evaluate(model, eval_dataloader, device, t=t)
 
             # save model checkpoint
             if ((iteration + 1) % save_model_every == 0 or (iteration + 1) == iterations):
@@ -165,17 +167,17 @@ def train_iteration(
             
             # log metrics
             if wandb_logging:
-                wandb.log({**train_log, **eval_log}, step=iteration+1)
+                wandb.log(eval_log, step=iteration+1)
                 
             model.train()  # switch back to training mode after validation
 
     return
 
 
-def evaluate(model, eval_dataloader, device, eval_log, t=0.2):
+def evaluate(model, eval_dataloader, device, t=0.2):
     model.eval()
     eval_losses = [[], [], []]
-    pbar = tqdm(eval_dataloader, desc=f"Eval", disable=True)
+    pbar = tqdm(eval_dataloader, desc=f"Eval")
     with torch.no_grad():
         for batch in pbar:
             data = batch_to(batch, device)
@@ -328,7 +330,7 @@ def train(
             pretrained_rqvae_path, map_location=device, weights_only=False
         )
         optimizer.load_state_dict(state["optimizer"])
-        start_iter = state["iter"] + 1
+        start_iter = state["iteration"] + 1
 
     model, optimizer = accelerator.prepare(model, optimizer)
 
@@ -354,7 +356,7 @@ def train(
         disable=not accelerator.is_main_process,
     ) as pbar:
         losses = [[], [], []]
-        for iter in range(start_iter, start_iter + 1 + iterations):
+        for iter_ in range(start_iter, start_iter + 1 + iterations):
             t = 0.2
             train_iteration(
                 model=model,
@@ -367,7 +369,7 @@ def train(
                 accelerator=accelerator,
                 gradient_accumulate_every=gradient_accumulate_every,
                 device=device,
-                iteration=iter,
+                iteration=iter_,
                 iterations=iterations,
                 losses=losses,
                 use_kmeans_init=use_kmeans_init,

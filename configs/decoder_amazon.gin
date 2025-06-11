@@ -11,6 +11,7 @@ train.vae_hidden_dims=[512, 256, 128]
 train.vae_embed_dim=32  
 train.vae_codebook_size=256
 train.pretrained_rqvae_path=None
+train.pretrained_decoder_path=None
 train.vae_codebook_normalize=False
 train.vae_sim_vq=False
 train.save_model_every=40000
