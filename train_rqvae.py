@@ -34,11 +34,16 @@ if not logger.hasHandlers():
 def train_iteration(
         model,
         optimizer,
+        tokenizer,
         train_dataloader,
+        eval_dataloader,
+        index_dataset,
+        vae_codebook_size,
         accelerator,
         gradient_accumulate_every,
         device,
         iteration,
+        iterations,
         losses,
         use_kmeans_init,
         train_dataset,
@@ -46,6 +51,8 @@ def train_iteration(
         wandb_logging,
         log_every,
         eval_every,
+        save_model_every,
+        log_dir,
         pbar,
         t=0.2,
     ): 
@@ -121,7 +128,7 @@ def train_iteration(
     if accelerator.is_main_process:
         if ((iteration + 1) % eval_every == 0 or iteration + 1 == iterations):
             logger.info('Evaluation Started!')
-            evaluate_metrics = evaluate(model, eval_dataloader, device, eval_log, t=t)
+            eval_metrics = evaluate(model, eval_dataloader, device, eval_log, t=t)
             eval_log.update(eval_metrics)
 
             # save model checkpoint
@@ -348,16 +355,20 @@ def train(
     ) as pbar:
         losses = [[], [], []]
         for iter in range(start_iter, start_iter + 1 + iterations):
-            total_loss = 0
             t = 0.2
             train_iteration(
                 model=model,
                 optimizer=optimizer,
+                tokenizer=tokenizer,
                 train_dataloader=train_dataloader,
+                eval_dataloader=eval_dataloader,
+                index_dataset=index_dataset,
+                vae_codebook_size=vae_codebook_size,
                 accelerator=accelerator,
                 gradient_accumulate_every=gradient_accumulate_every,
                 device=device,
                 iteration=iter,
+                iterations=iterations,
                 losses=losses,
                 use_kmeans_init=use_kmeans_init,
                 train_dataset=train_dataset,
@@ -365,10 +376,11 @@ def train(
                 wandb_logging=wandb_logging,
                 log_every=log_every,
                 eval_every=eval_every,
+                save_model_every=save_model_every,
                 pbar=pbar,
+                log_dir=log_dir,
                 t=t,
             )
-
             pbar.update(1)
 
     if wandb_logging:
