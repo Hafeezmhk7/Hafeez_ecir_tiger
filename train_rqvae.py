@@ -136,7 +136,7 @@ def train_iteration(
             # save model checkpoint
             if ((iteration + 1) % save_model_every == 0 or (iteration + 1) == iterations):
                 state = {
-                    "iteration": iteration,
+                    "iteration": iteration+1,
                     "model": model.state_dict(),
                     "model_config": model.config,
                     "optimizer": optimizer.state_dict(),

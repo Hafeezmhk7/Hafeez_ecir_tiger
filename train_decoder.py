@@ -38,7 +38,6 @@ def train_iteration(model, optimizer, tokenizer,
                     gradient_accumulate_every, device,
                     pbar, log_dir, iteration, iterations,
                     save_model_every, log_every, eval_every, 
-                    partial_eval_every, full_eval_every,
                     wandb_logging):
     # set model to training mode
     model.train()
@@ -67,7 +66,8 @@ def train_iteration(model, optimizer, tokenizer,
     accelerator.backward(total_loss)
     assert model.sem_id_embedder.emb.weight.grad is not None
 
-    pbar.set_description(f"loss: {total_loss.item():.4f}")
+    if iteration % 100 == 0:
+        pbar.set_description(f"loss: {total_loss.item():.4f}")
     # autograd stuff
     accelerator.wait_for_everyone()
     optimizer.step()
@@ -102,7 +102,7 @@ def train_iteration(model, optimizer, tokenizer,
             # save model checkpoint
             if ((iteration + 1) % save_model_every == 0 or (iteration + 1) == iterations):
                 state = {
-                    "iteration": iteration,
+                    "iteration": iteration+1,
                     "model": model.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "scheduler": lr_scheduler.state_dict(),
@@ -125,7 +125,6 @@ def train_iteration(model, optimizer, tokenizer,
 def evaluate(model, eval_dataloader, device, tokenizer, metrics_accumulator):
     # set model to evaluation mode
     model.eval()
-    model.enable_generation = False
     total_loss = 0
     debug_metrics = []
     num_batches = 0
@@ -133,6 +132,7 @@ def evaluate(model, eval_dataloader, device, tokenizer, metrics_accumulator):
     for batch in pbar:
         data = batch_to(batch, device)
         tokenized_data = tokenizer(data)
+        model.enable_generation = False
         # debug metrics
         with torch.no_grad():
             model_output_eval = model(tokenized_data)
@@ -144,6 +144,7 @@ def evaluate(model, eval_dataloader, device, tokenizer, metrics_accumulator):
             )
             debug_metrics.append(eval_debug_metrics)
         # eval metrics
+        model.enable_generation = True
         generated = model.generate_next_sem_id(
             tokenized_data, top_k=True, temperature=1
         )
@@ -154,6 +155,7 @@ def evaluate(model, eval_dataloader, device, tokenizer, metrics_accumulator):
         )
         
     eval_metrics = metrics_accumulator.reduce()
+    eval_metrics = {f"metrics/{k}": v for k, v in eval_metrics.items()}
     # reset the metrics accumulator
     metrics_accumulator.reset()
     
@@ -188,8 +190,6 @@ def train(
     log_every=5000,
     eval_every=5000,
     save_model_every=1000000,
-    partial_eval_every=1000,
-    full_eval_every=10000,
     vae_input_dim=18,
     vae_embed_dim=16,
     vae_hidden_dims=[18, 18],
@@ -368,8 +368,6 @@ def train(
                             save_model_every=save_model_every,
                             log_every=log_every,
                             eval_every=eval_every,
-                            partial_eval_every=partial_eval_every,
-                            full_eval_every=full_eval_every,
                             wandb_logging=wandb_logging)
             pbar.update(1)
 

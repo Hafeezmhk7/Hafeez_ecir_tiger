@@ -1,5 +1,5 @@
 import torch
-
+import logging
 from data.schemas import SeqBatch
 from einops import rearrange
 from functools import cached_property
@@ -16,6 +16,8 @@ from typing import NamedTuple
 from torch import nn
 from torch import Tensor
 
+# fetch logger
+logger = logging.getLogger("recsys_logger")
 torch.set_float32_matmul_precision("high")
 
 
@@ -107,7 +109,7 @@ class RqVae(nn.Module, PyTorchModelHubMixin):
     def load_pretrained(self, path: str) -> None:
         state = torch.load(path, map_location=self.device, weights_only=False)
         self.load_state_dict(state["model"])
-        print(f"---Loaded RQVAE Iter {state['iter']}---")
+        logger.info(f"Loaded RQ-VAE Model | Iteration {state['iteration']}")
 
     def encode(self, x: Tensor) -> Tensor:
         return self.encoder(x)

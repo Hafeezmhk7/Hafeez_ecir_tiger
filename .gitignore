@@ -6,6 +6,7 @@ wandb
 trained_models/transformer*
 tl_out
 slurm_out
+slurm_output
 
 # macOS system files
 .DS_Store

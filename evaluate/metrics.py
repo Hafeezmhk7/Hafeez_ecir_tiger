@@ -85,11 +85,14 @@ class TopKAccumulator:
             matched_rank = rank[match_found]
             for k in self.ks:
                 self.metrics[f"h@{k}_pos_{i}"] += len(matched_rank[matched_rank < k])
-
-        B = actual.size(0)
+        
+        # calculate metrics for each batch
         for b in range(B):
             gold_docs = actual[b]
+            gold_docs_set = set(gold_docs.tolist())
             pred_docs = top_k[b]
+            num_relevant = len(gold_docs_set)
+            
             for k in self.ks:
                 topk_pred = pred_docs[:k]
                 hits = sum(1 for doc in topk_pred if doc in gold_docs)
@@ -97,7 +100,11 @@ class TopKAccumulator:
                 self.metrics[f"ndcg@{k}"] += compute_ndcg_for_semantic_ids(
                     pred_docs, gold_docs, k
                 )
-                # if the tokinzer is given then for each prediction find the catergoy and add it to the list and then caclulate the gini coefficient
+                unique_hits = sum(1 for doc in topk_pred if doc in gold_docs_set)
+                recall = unique_hits / num_relevant if num_relevant else 0.0
+                self.metrics[f"recall@{k}"] += recall
+                
+                # if the tokenizer is given then for each prediction find the category and add it to the list and then calculate the gini coefficient
                 if tokenizer is not None:
                     list_gini = []
                     for pred in topk_pred:
