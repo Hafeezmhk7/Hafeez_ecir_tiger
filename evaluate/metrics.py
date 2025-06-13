@@ -4,7 +4,10 @@ import torch
 import math
 from einops import rearrange
 import numpy as np
+import logging
 
+# fetch logger
+logger = logging.getLogger("recsys_logger")
 
 def compute_dcg(relevance: list) -> float:
     return sum(rel / math.log2(idx + 2) for idx, rel in enumerate(relevance))
@@ -88,10 +91,8 @@ class TopKAccumulator:
         
         # calculate metrics for each batch
         for b in range(B):
-            gold_docs = actual[b]
-            gold_docs_set = set(gold_docs.tolist())
-            pred_docs = top_k[b]
-            num_relevant = len(gold_docs_set)
+            gold_docs = actual[b] # [4]
+            pred_docs = top_k[b] # [32, 4]
             
             for k in self.ks:
                 topk_pred = pred_docs[:k]
@@ -100,8 +101,15 @@ class TopKAccumulator:
                 self.metrics[f"ndcg@{k}"] += compute_ndcg_for_semantic_ids(
                     pred_docs, gold_docs, k
                 )
-                unique_hits = sum(1 for doc in topk_pred if doc in gold_docs_set)
-                recall = unique_hits / num_relevant if num_relevant else 0.0
+                try:
+                    gold_set = {tuple(gold_docs.tolist())}
+                    topk_set = set(tuple(seq.tolist()) for seq in topk_pred)
+                    unique_hits = len(gold_set & topk_set)
+                    num_relevant = len(gold_set)
+                    recall = unique_hits / num_relevant
+                except:
+                    recall = 0
+                    # logger.error("Error calculating Recall", exc_info=True)
                 self.metrics[f"recall@{k}"] += recall
                 
                 # if the tokenizer is given then for each prediction find the category and add it to the list and then calculate the gini coefficient
