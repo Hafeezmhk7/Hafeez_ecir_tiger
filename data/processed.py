@@ -97,14 +97,14 @@ class SeqData(Dataset):
         self,
         root: str,
         *args,
-        is_train: bool = True,
         subsample: bool = False,
         force_process: bool = False,
         dataset: RecDataset = RecDataset.ML_1M,
+        data_split: str = "train",
         **kwargs
     ) -> None:
 
-        assert (not subsample) or is_train, "Can only subsample on training split."
+        assert (not subsample) or (data_split=="train"), "Can only subsample on training split."
 
         raw_dataset_class = DATASET_NAME_TO_RAW_DATASET[dataset]
         max_seq_len = DATASET_NAME_TO_MAX_SEQ_LEN[dataset]
@@ -115,9 +115,9 @@ class SeqData(Dataset):
         if not os.path.exists(processed_data_path) or force_process:
             raw_data.process(max_seq_len=max_seq_len)
 
-        split = "train" if is_train else "test"
+        self.data_split = data_split
         self.subsample = subsample
-        self.sequence_data = raw_data.data[("user", "rated", "item")]["history"][split]
+        self.sequence_data = raw_data.data[("user", "rated", "item")]["history"][self.data_split]
 
         if not self.subsample:
             self.sequence_data["itemId"] = torch.nn.utils.rnn.pad_sequence(
@@ -128,8 +128,6 @@ class SeqData(Dataset):
 
         self._max_seq_len = max_seq_len
         self.item_data = raw_data.data["item"]["x"]
-        self.split = split
-
         self.item_brand_id = raw_data.data["item"]["brand_id"]
 
     @property

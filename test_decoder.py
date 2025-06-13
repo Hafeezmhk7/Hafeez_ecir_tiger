@@ -32,103 +32,13 @@ if not logger.hasHandlers():
     logger.propagate = False
 
 
-def train_iteration(model, optimizer, tokenizer,
-                    accelerator, lr_scheduler, metrics_accumulator,
-                    train_dataloader, eval_dataloader,
-                    gradient_accumulate_every, device,
-                    pbar, log_dir, iteration, iterations,
-                    save_model_every, log_every, eval_every, 
-                    wandb_logging):
-    # set model to training mode
-    model.train()
-    # set variables
-    total_loss = 0
-    debug_metrics = []
-    num_batches = 0
-
-    optimizer.zero_grad()
-    for _ in range(gradient_accumulate_every):
-        data = next_batch(train_dataloader, device)
-        tokenized_data = tokenizer(data)
-
-        with accelerator.autocast():
-            model_output = model(tokenized_data)
-            loss = model_output.loss / gradient_accumulate_every
-            total_loss += loss
-            num_batches += 1
-
-        if accelerator.is_main_process:
-            train_debug_metrics = compute_debug_metrics(
-                tokenized_data, model_output, "train"
-            )
-            debug_metrics.append(train_debug_metrics)
-
-    accelerator.backward(total_loss)
-    assert model.sem_id_embedder.emb.weight.grad is not None
-
-    if iteration % 100 == 0:
-        pbar.set_description(f"loss: {total_loss.item():.4f}")
-    # autograd stuff
-    accelerator.wait_for_everyone()
-    optimizer.step()
-    lr_scheduler.step()
-    accelerator.wait_for_everyone()
-    
-    if accelerator.is_main_process:
-        if ((iteration + 1) % log_every == 0 or iteration + 1 == iterations):
-            train_log = {
-                "train/learning_rate": optimizer.param_groups[0]["lr"],
-                "train/total_loss": total_loss.cpu().item(),
-            }
-            # average debug metrics
-            averaged_debug_metrics = {}
-            for key in debug_metrics[0].keys():
-                averaged_debug_metrics[key] = sum(d[key] for d in debug_metrics) / num_batches
-            train_log.update(averaged_debug_metrics)
-
-            # print train metrics
-            display_metrics(metrics=train_log, title="Training Metrics")
-            
-            # log metrics
-            if wandb_logging:
-                wandb.log(train_log, step=iteration+1)
-
-    # evaluate model
-    if accelerator.is_main_process:
-        if ((iteration + 1) % eval_every == 0 or (iteration + 1) == iterations):
-            logger.info('Evaluation Started!')
-            eval_log = evaluate(model, eval_dataloader, device, tokenizer, metrics_accumulator)
-            
-            # save model checkpoint
-            if ((iteration + 1) % save_model_every == 0 or (iteration + 1) == iterations):
-                state = {
-                    "iteration": iteration+1,
-                    "model": model.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "scheduler": lr_scheduler.state_dict(),
-                }
-                torch.save(state, f"{log_dir}/checkpoint_{iteration+1}.pt")
-                logger.info(f'Iteration {iteration}: Model saved.')
-            
-            # print eval metrics
-            display_metrics(eval_log, title="Evaluation Metrics")
-            
-            # log metrics
-            if wandb_logging:
-                wandb.log(eval_log, step=iteration+1)
-                
-            model.train()  # switch back to training mode after validation
-
-    return
-
-
-def evaluate(model, eval_dataloader, device, tokenizer, metrics_accumulator):
+def evaluate(model, test_dataloader, device, tokenizer, metrics_accumulator):
     # set model to evaluation mode
     model.eval()
     total_loss = 0
     debug_metrics = []
     num_batches = 0
-    pbar = tqdm(eval_dataloader, desc=f"Eval")
+    pbar = tqdm(test_dataloader, desc=f"Eval")
     for batch in pbar:
         data = batch_to(batch, device)
         tokenized_data = tokenizer(data)
@@ -171,11 +81,8 @@ def evaluate(model, eval_dataloader, device, tokenizer, metrics_accumulator):
 
 
 @gin.configurable
-def train(
-    iterations=500000,
+def test(
     batch_size=64,
-    learning_rate=0.001,
-    weight_decay=0.01,
     dataset_folder="dataset/ml-1m",
     log_dir="out/",
     dataset=RecDataset.ML_1M,
@@ -186,10 +93,6 @@ def train(
     wandb_logging=False,
     force_dataset_process=False,
     mixed_precision_type="fp16",
-    gradient_accumulate_every=1,
-    log_every=5000,
-    eval_every=5000,
-    save_model_every=1000000,
     vae_input_dim=18,
     vae_embed_dim=16,
     vae_hidden_dims=[18, 18],
@@ -254,28 +157,27 @@ def train(
     train_dataset = SeqData(
         root=dataset_folder,
         dataset=dataset,
-        data_split="train",
         subsample=train_data_subsample,
         split=dataset_split,
+        data_split="train",
     )
     train_dataloader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True)
-    describe_dataloader(train_dataloader, title="Train DataLoader Summary")
     train_dataloader = cycle(train_dataloader)
 
-    # load eval dataset
-    eval_dataset = SeqData(
+    # load test dataset
+    test_dataset = SeqData(
         root=dataset_folder,
         dataset=dataset,
-        data_split="eval",
         subsample=False,
         split=dataset_split,
+        data_split="test",
     )
-    eval_dataloader = DataLoader(
-        eval_dataset, batch_size=batch_size, shuffle=True)
-    describe_dataloader(eval_dataloader, title="Eval DataLoader Summary")
-    train_dataloader, eval_dataloader = accelerator.prepare(
-        train_dataloader, eval_dataloader
+    test_dataloader = DataLoader(
+        test_dataset, batch_size=batch_size, shuffle=True)
+    describe_dataloader(test_dataloader, title="Test DataLoader Summary")
+    train_dataloader, test_dataloader = accelerator.prepare(
+        train_dataloader, test_dataloader
     )
 
     # load rq-vae tokenizer
@@ -308,68 +210,41 @@ def train(
     )
     display_model_summary(model, device)
 
-    # load optimizer and scheduler
-    optimizer = AdamW(
-        params=model.parameters(), lr=learning_rate, weight_decay=weight_decay
-    )
-    lr_scheduler = InverseSquareRootScheduler(
-        optimizer=optimizer, warmup_steps=10000)
-
     if wandb_logging and accelerator.is_main_process:
         # wandb.login()
         run_name = f"decoder-{dataset.name.lower()}-{dataset_split}" + \
             "/" + uid
         run = wandb.init(entity="RecSys-UvA",
                          name=run_name,
-                         project="gen-ir-decoder-training",
+                         project="gen-ir-decoder-testing",
                          config=params)
 
-    start_iter = 0
     if pretrained_decoder_path is not None:
         logger.info(
-            f"[Resume Training] Loading pretrained Decoder from {pretrained_decoder_path}.")
+            f"Loading pretrained Decoder from {pretrained_decoder_path}.")
         checkpoint = torch.load(
             pretrained_decoder_path, map_location=device, weights_only=False
         )
         model.load_state_dict(checkpoint["model"])
-        optimizer.load_state_dict(checkpoint["optimizer"])
-        if "scheduler" in checkpoint:
-            lr_scheduler.load_state_dict(checkpoint["scheduler"])
-        start_iter = checkpoint["iteration"] + 1
+    else:
+        logger.error("No pretrained decoder path provided. Please provide a valid path to continue testing.")
+        return
 
-    model, optimizer, lr_scheduler = accelerator.prepare(
-        model, optimizer, lr_scheduler)
+    model = accelerator.prepare(model)
 
     metrics_accumulator = TopKAccumulator(ks=[1, 5, 10])
 
-    # starting the training
-    logger.info(f"Training Started! - Debugging: {debug}")
-
-    with tqdm(
-        initial=start_iter,
-        total=start_iter + iterations,
-        disable=not accelerator.is_main_process,
-    ) as pbar:
-        for iter_ in range(start_iter, start_iter + 1 + iterations):
-            train_iteration(model=model,
-                            optimizer=optimizer,
-                            tokenizer=tokenizer,
-                            accelerator=accelerator,
-                            lr_scheduler=lr_scheduler,
-                            metrics_accumulator=metrics_accumulator,
-                            train_dataloader=train_dataloader,
-                            eval_dataloader=eval_dataloader,
-                            gradient_accumulate_every=gradient_accumulate_every,
-                            device=device,
-                            pbar=pbar,
-                            log_dir=log_dir,
-                            iteration=iter_,
-                            iterations=iterations,
-                            save_model_every=save_model_every,
-                            log_every=log_every,
-                            eval_every=eval_every,
-                            wandb_logging=wandb_logging)
-            pbar.update(1)
+    # starting the testing
+    logger.info(f"Testing Started! - Debugging: {debug}")
+    eval_log = evaluate(model, test_dataloader, device, tokenizer, metrics_accumulator)
+    
+    # print eval metrics
+    display_metrics(eval_log, title="Testing Metrics")
+    
+    # log metrics
+    if wandb_logging:
+        wandb.log(eval_log)
+                
 
     if wandb_logging:
         wandb.finish()
@@ -378,4 +253,4 @@ def train(
 if __name__ == "__main__":
     set_seed(42)
     parse_config()
-    train()
+    test()
