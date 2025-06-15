@@ -148,14 +148,8 @@ def evaluate(model, eval_dataloader, device, tokenizer, metrics_accumulator, use
         data = batch_to(batch, device)
         tokenized_data = tokenizer(data)
         if use_image_features:
-            valid_sem_id_min = tokenized_data.sem_ids.min().item()
-            valid_sem_id_fut_min = tokenized_data.sem_ids_fut.min().item()
             valid_max = model.num_embeddings - 1
-            tokenized_data = tokenized_data._replace(
-                sem_ids=torch.clamp(tokenized_data.sem_ids, min=valid_sem_id_min, max=valid_max),
-                sem_ids_fut=torch.clamp(tokenized_data.sem_ids_fut, min=valid_sem_id_fut_min, max=valid_max)
-                if tokenized_data.sem_ids_fut is not None else None
-            )
+            tokenized_data = clamp_ids(tokenized_data, valid_max)
         model.enable_generation = False
         # debug metrics
         with torch.no_grad():
