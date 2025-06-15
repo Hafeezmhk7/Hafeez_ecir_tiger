@@ -17,6 +17,7 @@ from torch.utils.data import BatchSampler, DataLoader, RandomSampler
 from tqdm import tqdm
 from rich.logging import RichHandler
 import logging
+os.environ['TORCH_USE_CUDA_DSA'] = '1'
 
 
 # logging
@@ -38,6 +39,7 @@ def train_iteration(model, optimizer, tokenizer,
                     gradient_accumulate_every, device,
                     pbar, log_dir, iteration, iterations,
                     save_model_every, log_every, eval_every, 
+                    use_image_features,
                     wandb_logging):
     # set model to training mode
     model.train()
@@ -50,6 +52,15 @@ def train_iteration(model, optimizer, tokenizer,
     for _ in range(gradient_accumulate_every):
         data = next_batch(train_dataloader, device)
         tokenized_data = tokenizer(data)
+        if use_image_features:
+            valid_sem_id_min = tokenized_data.sem_ids.min().item()
+            valid_sem_id_fut_min = tokenized_data.sem_ids_fut.min().item()
+            valid_max = model.num_embeddings - 1
+            tokenized_data = tokenized_data._replace(
+                sem_ids=torch.clamp(tokenized_data.sem_ids, min=valid_sem_id_min, max=valid_max),
+                sem_ids_fut=torch.clamp(tokenized_data.sem_ids_fut, min=valid_sem_id_fut_min, max=valid_max)
+                if tokenized_data.sem_ids_fut is not None else None
+            )
 
         with accelerator.autocast():
             model_output = model(tokenized_data)
@@ -97,7 +108,8 @@ def train_iteration(model, optimizer, tokenizer,
     if accelerator.is_main_process:
         if ((iteration + 1) % eval_every == 0 or (iteration + 1) == iterations):
             logger.info('Evaluation Started!')
-            eval_log = evaluate(model, eval_dataloader, device, tokenizer, metrics_accumulator)
+            eval_log = evaluate(model, eval_dataloader, device, tokenizer, 
+                                metrics_accumulator, use_image_features)
             
             # save model checkpoint
             if ((iteration + 1) % save_model_every == 0 or (iteration + 1) == iterations):
@@ -122,7 +134,7 @@ def train_iteration(model, optimizer, tokenizer,
     return
 
 
-def evaluate(model, eval_dataloader, device, tokenizer, metrics_accumulator):
+def evaluate(model, eval_dataloader, device, tokenizer, metrics_accumulator, use_image_features):
     # set model to evaluation mode
     model.eval()
     total_loss = 0
@@ -132,6 +144,15 @@ def evaluate(model, eval_dataloader, device, tokenizer, metrics_accumulator):
     for batch in pbar:
         data = batch_to(batch, device)
         tokenized_data = tokenizer(data)
+        if use_image_features:
+            valid_sem_id_min = tokenized_data.sem_ids.min().item()
+            valid_sem_id_fut_min = tokenized_data.sem_ids_fut.min().item()
+            valid_max = model.num_embeddings - 1
+            tokenized_data = tokenized_data._replace(
+                sem_ids=torch.clamp(tokenized_data.sem_ids, min=valid_sem_id_min, max=valid_max),
+                sem_ids_fut=torch.clamp(tokenized_data.sem_ids_fut, min=valid_sem_id_fut_min, max=valid_max)
+                if tokenized_data.sem_ids_fut is not None else None
+            )
         model.enable_generation = False
         # debug metrics
         with torch.no_grad():
@@ -386,6 +407,7 @@ def train(
                             save_model_every=save_model_every,
                             log_every=log_every,
                             eval_every=eval_every,
+                            use_image_features=use_image_features,
                             wandb_logging=wandb_logging)
             pbar.update(1)
 
