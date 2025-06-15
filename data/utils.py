@@ -4,6 +4,7 @@ from rich import print as rprint
 from rich.table import Table
 from rich.console import Console
 from collections import Counter
+import torch
 
 # fetch logger
 logger = logging.getLogger("recsys_logger")

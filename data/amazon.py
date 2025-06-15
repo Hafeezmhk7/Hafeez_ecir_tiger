@@ -103,21 +103,22 @@ class AmazonReviews(InMemoryDataset, PreprocessingMixin):
                 items = [self._remap_ids(id) for id in parsed_line[1:]]
 
                 # We keep the whole sequence without padding. Allows flexible training-time subsampling.
-                train_items = items[:-2]
+                # example: items[22]
+                train_items = items[:-2]  # items[0:20] → [1..20]
                 sequences["train"]["itemId"].append(train_items)
-                sequences["train"]["itemId_fut"].append(items[-2])
+                sequences["train"]["itemId_fut"].append(items[-2]) # → 21
 
-                eval_items = items[-(max_seq_len + 2) : -2]
+                eval_items = items[-(max_seq_len + 2) : -2] # items[-22:-2] → [1..20]
                 sequences["eval"]["itemId"].append(
                     eval_items + [-1] * (max_seq_len - len(eval_items))
                 )
-                sequences["eval"]["itemId_fut"].append(items[-2])
+                sequences["eval"]["itemId_fut"].append(items[-2]) # → 21
 
-                test_items = items[-(max_seq_len + 1) : -1]
+                test_items = items[-(max_seq_len + 1) : -1] # items[-21:-1] → [2..21]
                 sequences["test"]["itemId"].append(
                     test_items + [-1] * (max_seq_len - len(test_items))
                 )
-                sequences["test"]["itemId_fut"].append(items[-1])
+                sequences["test"]["itemId_fut"].append(items[-1]) # → 22
 
         for sp in splits:
             sequences[sp]["userId"] = user_ids

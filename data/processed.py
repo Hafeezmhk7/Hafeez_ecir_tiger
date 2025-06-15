@@ -12,6 +12,12 @@ from torch import Tensor
 from torch.utils.data import Dataset
 from typing import Optional
 import logging
+from PIL import Image
+from torch import nn
+import json
+import clip
+from tqdm import tqdm
+import numpy as np
 
 # fetch logger
 logger = logging.getLogger("recsys_logger")
@@ -40,6 +46,23 @@ DATASET_NAME_TO_MAX_SEQ_LEN = {
 }
 
 
+class CLIPImageEncoder(nn.Module):
+    def __init__(self, model_name: str = "ViT-L/14", device: str = "cpu"):
+        super().__init__()
+        self.model_name = model_name
+        self.clip_model, self.preprocess = clip.load(model_name, device=device)
+        
+        # Freeze CLIP parameters if you don't want to fine-tune
+        for param in self.clip_model.parameters():
+            param.requires_grad = False  # ← This freezes all parameters
+    
+    def forward(self, image_input: Tensor) -> Tensor:
+        with torch.no_grad():  # ← This also prevents gradients
+            image_feat = self.clip_model.encode_image(image_input)
+            image_feat = image_feat / image_feat.norm(dim=1, keepdim=True)
+        return image_feat
+
+
 class ItemData(Dataset):
     def __init__(
         self,
@@ -48,12 +71,17 @@ class ItemData(Dataset):
         force_process: bool = False,
         dataset: RecDataset = RecDataset.ML_1M,
         train_test_split: str = "all",
+        use_image_features: bool = False,
+        device: str = "cpu",
         **kwargs
     ) -> None:
 
+        self.use_image_features = use_image_features
+        self.root = root
+        self.device = device
         raw_dataset_class = DATASET_NAME_TO_RAW_DATASET[dataset]
         max_seq_len = DATASET_NAME_TO_MAX_SEQ_LEN[dataset]
-        raw_data = raw_dataset_class(root=root, *args, **kwargs)
+        raw_data = raw_dataset_class(root=self.root, *args, **kwargs)
         processed_data_path = raw_data.processed_paths[0]
         if not os.path.exists(processed_data_path) or force_process:
             raw_data.process(max_seq_len=max_seq_len)
@@ -71,8 +99,58 @@ class ItemData(Dataset):
             raw_data.data["item"]["brand_id"][filt],
         )
 
+        if self.use_image_features:
+            self.dataset_split = kwargs.get("split")
+            with open(os.path.join(self.root, "raw", self.dataset_split, "datamaps.json"), "r") as f:
+                self.data_maps = json.load(f)
+
+            # pre-compute all image features
+            self.image_features = self._precompute_image_features()
+
     def __len__(self):
         return self.item_data.shape[0]
+
+    def _precompute_image_features(self):
+        logger.info("Pre-computing image features ...")
+        
+        # create CLIP model temporarily for feature extraction
+        img_model = CLIPImageEncoder(device=self.device)
+        
+        image_features = []
+        batch_size = 128
+        
+        for i in tqdm(range(0, len(self), batch_size)):
+            batch_end = min(i + batch_size, len(self))
+            batch_images = []
+            
+            for idx in range(i, batch_end):
+                img_id = str(idx + 1)
+                img_filename = self.data_maps["id2item"][img_id] + ".jpg"
+                img_path = os.path.join(self.root, "raw", self.dataset_split, "product_images", img_filename)
+        
+                try:
+                    image = Image.open(img_path).convert("RGB")
+                    image_tensor = img_model.preprocess(image)
+                except Exception:
+                    image_tensor = torch.zeros((3, 224, 224))
+                batch_images.append(image_tensor)
+            
+            # process batch
+            batch_images = torch.stack(batch_images).to(self.device)
+            with torch.no_grad():
+                batch_features = img_model.clip_model.encode_image(batch_images)
+                batch_features = batch_features / batch_features.norm(dim=1, keepdim=True)
+            
+            image_features.append(batch_features.cpu())  # move to CPU to save GPU memory
+        
+        # concatenate all features
+        all_features = torch.cat(image_features, dim=0)
+        
+        # clean up the temporary model
+        del img_model
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        
+        return all_features
 
     def __getitem__(self, idx):
         item_ids = (
@@ -80,6 +158,20 @@ class ItemData(Dataset):
         )
         x = self.item_data[idx, :768]
         x_brand_id = torch.Tensor(self.item_brand_id[idx])
+        
+        # if image encoding enabled and filenames are present
+        # use pre-computed image features
+        if self.use_image_features and self.image_features is not None:
+            if isinstance(idx, (int, np.integer)):
+                image_features = self.image_features[idx:idx+1].to(x.device)
+            else:
+                image_features = self.image_features[idx].to(x.device)
+            
+            # add image features to x
+            x = x.unsqueeze(0) if x.dim() == 1 else x
+            # x = torch.cat([x, image_features], dim=-1)
+            x += image_features
+
         return SeqBatch(
             user_ids=-1 * torch.ones_like(item_ids.squeeze(0)),
             ids=item_ids,

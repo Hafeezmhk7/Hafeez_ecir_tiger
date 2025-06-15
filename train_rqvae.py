@@ -63,6 +63,7 @@ def train_iteration(
     eval_log = {}
 
     if iteration == 0 and use_kmeans_init:
+        logger.info("Using KMeans initialization for codebooks.")
         kmeans_init_data = batch_to(
             train_dataset[torch.arange(min(20000, len(train_dataset)))], device
         )
@@ -226,6 +227,7 @@ def train(
     vae_sim_vq=False,
     vae_n_layers=3,
     dataset_split="beauty",
+    use_image_features=False,
     debug=False,
 ):
 
@@ -253,6 +255,8 @@ def train(
         force_process=force_dataset_process,
         train_test_split="train",
         split=dataset_split,
+        use_image_features=use_image_features,
+        device=device,
     )
     train_sampler = BatchSampler(RandomSampler(train_dataset), batch_size, False)
     train_dataloader = DataLoader(
@@ -263,6 +267,7 @@ def train(
     )
     describe_dataloader(train_dataloader, train_sampler, title="Train DataLoader Summary")
     train_dataloader = cycle(train_dataloader)
+    train_dataloader = accelerator.prepare(train_dataloader)
 
     # load eval dataset
     eval_dataset = ItemData(
@@ -271,7 +276,10 @@ def train(
         force_process=False,
         train_test_split="eval",
         split=dataset_split,
+        use_image_features=use_image_features,
+        device=device,
     )
+    eval_dataset = Subset(eval_dataset, range(min(100, len(eval_dataset))))
     eval_sampler = BatchSampler(RandomSampler(eval_dataset), batch_size, False)
     eval_dataloader = DataLoader(
         eval_dataset,
@@ -279,6 +287,9 @@ def train(
         batch_size=None,
         collate_fn=lambda batch: batch,
     )
+    describe_dataloader(eval_dataloader, eval_sampler, title="Eval DataLoader Summary")
+    
+    # load all the items dataset
     index_dataset = (
         ItemData(
             root=dataset_folder,
@@ -286,11 +297,10 @@ def train(
             force_process=False,
             train_test_split="all",
             split=dataset_split,
+            use_image_features=use_image_features,
+            device=device,
         )
     )
-    describe_dataloader(eval_dataloader, eval_sampler, title="Eval DataLoader Summary")
-    
-    train_dataloader = accelerator.prepare(train_dataloader)
     # TODO: Investigate bug with prepare eval_dataloader
 
     # load model
