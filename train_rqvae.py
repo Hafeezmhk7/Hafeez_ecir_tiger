@@ -228,6 +228,8 @@ def train(
     vae_n_layers=3,
     dataset_split="beauty",
     use_image_features=False,
+    feature_combination_mode="sum",
+    run_prefix="",
     debug=False,
 ):
 
@@ -246,8 +248,15 @@ def train(
     display_args(locals())
 
     # logging
-    if wandb_logging:
+    if wandb_logging and accelerator.is_main_process:
         params = locals()
+        # wandb.login()
+        run_name = f"{run_prefix}-rq-vae-{dataset.name.lower()}-{dataset_split}" + "/" + uid
+        run = wandb.init(entity="RecSys-UvA",
+                         name=run_name,
+                         project="rq-vae-training", 
+                         config=params)
+        
     # load train dataset
     train_dataset = ItemData(
         root=dataset_folder,
@@ -256,6 +265,7 @@ def train(
         train_test_split="train",
         split=dataset_split,
         use_image_features=use_image_features,
+        feature_combination_mode=feature_combination_mode,
         device=device,
     )
     train_sampler = BatchSampler(RandomSampler(train_dataset), batch_size, False)
@@ -277,9 +287,9 @@ def train(
         train_test_split="eval",
         split=dataset_split,
         use_image_features=use_image_features,
+        feature_combination_mode=feature_combination_mode,
         device=device,
     )
-    eval_dataset = Subset(eval_dataset, range(min(100, len(eval_dataset))))
     eval_sampler = BatchSampler(RandomSampler(eval_dataset), batch_size, False)
     eval_dataloader = DataLoader(
         eval_dataset,
@@ -298,12 +308,15 @@ def train(
             train_test_split="all",
             split=dataset_split,
             use_image_features=use_image_features,
+            feature_combination_mode=feature_combination_mode,
             device=device,
         )
     )
     # TODO: Investigate bug with prepare eval_dataloader
 
     # load model
+    if use_image_features and feature_combination_mode == "concat":
+        vae_input_dim = vae_input_dim * 2
     model = RqVae(
         input_dim=vae_input_dim,
         embed_dim=vae_embed_dim,
@@ -323,14 +336,6 @@ def train(
     optimizer = AdamW(
         params=model.parameters(), lr=learning_rate, weight_decay=weight_decay
     )
-
-    if wandb_logging and accelerator.is_main_process:
-        # wandb.login()
-        run_name = f"rq-vae-{dataset.name.lower()}-{dataset_split}" + "/" + uid
-        run = wandb.init(entity="RecSys-UvA",
-                         name=run_name,
-                         project="rq-vae-training", 
-                         config=params)
 
     start_iter = 0
     if pretrained_rqvae_path is not None:

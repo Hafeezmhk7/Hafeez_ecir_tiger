@@ -72,6 +72,7 @@ class ItemData(Dataset):
         dataset: RecDataset = RecDataset.ML_1M,
         train_test_split: str = "all",
         use_image_features: bool = False,
+        feature_combination_mode: str = "sum",
         device: str = "cpu",
         **kwargs
     ) -> None:
@@ -79,6 +80,7 @@ class ItemData(Dataset):
         self.use_image_features = use_image_features
         self.root = root
         self.device = device
+        self.feature_combination_mode = feature_combination_mode
         raw_dataset_class = DATASET_NAME_TO_RAW_DATASET[dataset]
         max_seq_len = DATASET_NAME_TO_MAX_SEQ_LEN[dataset]
         raw_data = raw_dataset_class(root=self.root, *args, **kwargs)
@@ -168,9 +170,11 @@ class ItemData(Dataset):
                 image_features = self.image_features[idx].to(x.device)
             
             # add image features to x
-            x = x.unsqueeze(0) if x.dim() == 1 else x
-            # x = torch.cat([x, image_features], dim=-1)
-            x += image_features
+            if self.feature_combination_mode == "sum":
+                x = x.unsqueeze(0) if x.dim() == 1 else x
+                x = x + image_features
+            elif self.feature_combination_mode == "concat":
+                x = torch.cat([x, image_features], dim=-1)
 
         return SeqBatch(
             user_ids=-1 * torch.ones_like(item_ids.squeeze(0)),
