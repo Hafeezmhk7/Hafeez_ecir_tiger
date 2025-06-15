@@ -251,7 +251,9 @@ def train(
     if wandb_logging and accelerator.is_main_process:
         params = locals()
         # wandb.login()
-        run_name = f"{run_prefix}-rq-vae-{dataset.name.lower()}-{dataset_split}" + "/" + uid
+        run_name = f"rq-vae-{dataset.name.lower()}-{dataset_split}" + "/" + uid
+        if run_prefix:
+            run_name = f"{run_prefix}-{run_name}"
         run = wandb.init(entity="RecSys-UvA",
                          name=run_name,
                          project="rq-vae-training", 

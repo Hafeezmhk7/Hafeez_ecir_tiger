@@ -207,6 +207,9 @@ def train(
     train_data_subsample=True,
     model_jagged_mode=True,
     category=None,
+    use_image_features=False,
+    feature_combination_mode="sum",
+    run_prefix="",
     debug=False,
 ):
 
@@ -227,11 +230,27 @@ def train(
     )
     device = accelerator.device
     display_args(locals())
+    
+    if pretrained_rqvae_path is None:
+        logger.error("No pretrained rqvae path provided. Please provide a valid path to continue training.")
+        return
+    
+    # extract rq-vae uid
+    rqvae_uid = pretrained_rqvae_path.split("/")[-2]
 
     # logging
-    if wandb_logging:
+    if wandb_logging and accelerator.is_main_process:
         # get local scope parameters for logging
         params = locals()
+        # wandb.login()
+        run_name = f"decoder-{dataset.name.lower()}-{dataset_split}" + \
+            "/" + rqvae_uid + "/" + uid
+        if run_prefix:
+            run_name = f"{run_prefix}-{run_name}"
+        run = wandb.init(entity="RecSys-UvA",
+                         name=run_name,
+                         project="gen-ir-decoder-training",
+                         config=params)
 
     # load items dataset
     item_dataset = (
@@ -240,6 +259,9 @@ def train(
             dataset=dataset,
             force_process=force_dataset_process,
             split=dataset_split,
+            use_image_features=use_image_features,
+            feature_combination_mode=feature_combination_mode,
+            device=device,
         )
         if category is None
         else ItemData(
@@ -248,6 +270,9 @@ def train(
             force_process=force_dataset_process,
             split=dataset_split,
             category=category,
+            use_image_features=use_image_features,
+            feature_combination_mode=feature_combination_mode,
+            device=device,
         )
     )
     # load train dataset
@@ -267,7 +292,7 @@ def train(
     eval_dataset = SeqData(
         root=dataset_folder,
         dataset=dataset,
-        data_split="eval",
+        data_split="test",
         subsample=False,
         split=dataset_split,
     )
@@ -279,6 +304,8 @@ def train(
     )
 
     # load rq-vae tokenizer
+    if use_image_features and feature_combination_mode == "concat":
+        vae_input_dim = vae_input_dim * 2
     tokenizer = SemanticIdTokenizer(
         input_dim=vae_input_dim,
         hidden_dims=vae_hidden_dims,
@@ -314,15 +341,6 @@ def train(
     )
     lr_scheduler = InverseSquareRootScheduler(
         optimizer=optimizer, warmup_steps=10000)
-
-    if wandb_logging and accelerator.is_main_process:
-        # wandb.login()
-        run_name = f"decoder-{dataset.name.lower()}-{dataset_split}" + \
-            "/" + uid
-        run = wandb.init(entity="RecSys-UvA",
-                         name=run_name,
-                         project="gen-ir-decoder-training",
-                         config=params)
 
     start_iter = 0
     if pretrained_decoder_path is not None:
