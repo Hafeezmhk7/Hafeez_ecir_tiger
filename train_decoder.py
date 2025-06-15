@@ -33,6 +33,15 @@ if not logger.hasHandlers():
     logger.propagate = False
 
 
+def clamp_ids(tokenized_data, valid_max):
+    valid_sem_id_min = tokenized_data.sem_ids.min().item()
+    valid_sem_id_fut_min = tokenized_data.sem_ids_fut.min().item()
+    tokenized_data = tokenized_data._replace(
+        sem_ids=torch.clamp(tokenized_data.sem_ids, min=valid_sem_id_min, max=valid_max),
+        sem_ids_fut=torch.clamp(tokenized_data.sem_ids_fut, min=valid_sem_id_fut_min, max=valid_max)
+    )
+    return tokenized_data
+
 def train_iteration(model, optimizer, tokenizer,
                     accelerator, lr_scheduler, metrics_accumulator,
                     train_dataloader, eval_dataloader,
@@ -53,14 +62,8 @@ def train_iteration(model, optimizer, tokenizer,
         data = next_batch(train_dataloader, device)
         tokenized_data = tokenizer(data)
         if use_image_features:
-            valid_sem_id_min = tokenized_data.sem_ids.min().item()
-            valid_sem_id_fut_min = tokenized_data.sem_ids_fut.min().item()
             valid_max = model.num_embeddings - 1
-            tokenized_data = tokenized_data._replace(
-                sem_ids=torch.clamp(tokenized_data.sem_ids, min=valid_sem_id_min, max=valid_max),
-                sem_ids_fut=torch.clamp(tokenized_data.sem_ids_fut, min=valid_sem_id_fut_min, max=valid_max)
-                if tokenized_data.sem_ids_fut is not None else None
-            )
+            tokenized_data = clamp_ids(tokenized_data, valid_max)
 
         with accelerator.autocast():
             model_output = model(tokenized_data)
