@@ -31,8 +31,16 @@ if not logger.hasHandlers():
     logger.addHandler(handler)
     logger.propagate = False
 
+def clamp_ids(tokenized_data, valid_max):
+    valid_sem_id_min = tokenized_data.sem_ids.min().item()
+    valid_sem_id_fut_min = tokenized_data.sem_ids_fut.min().item()
+    tokenized_data = tokenized_data._replace(
+        sem_ids=torch.clamp(tokenized_data.sem_ids, min=valid_sem_id_min, max=valid_max),
+        sem_ids_fut=torch.clamp(tokenized_data.sem_ids_fut, min=valid_sem_id_fut_min, max=valid_max)
+    )
+    return tokenized_data
 
-def evaluate(model, test_dataloader, device, tokenizer, metrics_accumulator):
+def evaluate(model, test_dataloader, device, tokenizer, metrics_accumulator, use_image_features):
     # set model to evaluation mode
     model.eval()
     total_loss = 0
@@ -42,6 +50,9 @@ def evaluate(model, test_dataloader, device, tokenizer, metrics_accumulator):
     for batch in pbar:
         data = batch_to(batch, device)
         tokenized_data = tokenizer(data)
+        if use_image_features:
+            valid_max = model.num_embeddings - 1
+            tokenized_data = clamp_ids(tokenized_data, valid_max)
         model.enable_generation = False
         # debug metrics
         with torch.no_grad():
@@ -110,6 +121,9 @@ def test(
     train_data_subsample=True,
     model_jagged_mode=True,
     category=None,
+    use_image_features=False,
+    feature_combination_mode="sum",
+    run_prefix="",
     debug=False,
 ):
 
@@ -117,8 +131,8 @@ def test(
     uid = str(int(time.time()))
     logger.info(
         f"Session Started with UID '{uid}' | Dataset '{dataset_folder}' | Split '{dataset_split}'")
-    log_dir = os.path.join(os.path.expanduser("~"), log_dir, dataset_split, uid)
-    os.makedirs(log_dir, exist_ok=True)
+    # log_dir = os.path.join(os.path.expanduser("~"), log_dir, dataset_split, uid)
+    # os.makedirs(log_dir, exist_ok=True)
 
     if dataset != RecDataset.AMAZON:
         raise Exception(f"Dataset currently not supported: {dataset}.")
@@ -131,11 +145,27 @@ def test(
     device = accelerator.device
     display_args(locals())
 
+    if pretrained_rqvae_path is None or pretrained_decoder_path is None:
+        logger.error("No pretrained rqvae or decoder path provided. Please provide valid paths to continue training.")
+        return
+
+    # extract rq-vae uid
+    rqvae_uid = pretrained_rqvae_path.split("/")[-2]
+    
     # logging
-    if wandb_logging:
+    if wandb_logging and accelerator.is_main_process:
         # get local scope parameters for logging
         params = locals()
-
+        # wandb.login()
+        run_name = f"decoder-{dataset.name.lower()}-{dataset_split}" + \
+            "/" + rqvae_uid + "/" + uid
+        if run_prefix:
+            run_name = f"{run_prefix}-{run_name}"
+        run = wandb.init(entity="RecSys-UvA",
+                         name=run_name,
+                         project="gen-ir-decoder-testing",
+                         config=params)
+                         
     # load items dataset
     item_dataset = (
         ItemData(
@@ -143,6 +173,9 @@ def test(
             dataset=dataset,
             force_process=force_dataset_process,
             split=dataset_split,
+            use_image_features=use_image_features,
+            feature_combination_mode=feature_combination_mode,
+            device=device,
         )
         if category is None
         else ItemData(
@@ -151,6 +184,9 @@ def test(
             force_process=force_dataset_process,
             split=dataset_split,
             category=category,
+            use_image_features=use_image_features,
+            feature_combination_mode=feature_combination_mode,
+            device=device,
         )
     )
     # load train dataset
@@ -210,15 +246,6 @@ def test(
     )
     display_model_summary(model, device)
 
-    if wandb_logging and accelerator.is_main_process:
-        # wandb.login()
-        run_name = f"decoder-{dataset.name.lower()}-{dataset_split}" + \
-            "/" + uid
-        run = wandb.init(entity="RecSys-UvA",
-                         name=run_name,
-                         project="gen-ir-decoder-testing",
-                         config=params)
-
     if pretrained_decoder_path is not None:
         logger.info(
             f"Loading pretrained Decoder from {pretrained_decoder_path}.")
@@ -236,7 +263,7 @@ def test(
 
     # starting the testing
     logger.info(f"Testing Started! - Debugging: {debug}")
-    eval_log = evaluate(model, test_dataloader, device, tokenizer, metrics_accumulator)
+    eval_log = evaluate(model, test_dataloader, device, tokenizer, metrics_accumulator, use_image_features)
     
     # print eval metrics
     display_metrics(eval_log, title="Testing Metrics")
