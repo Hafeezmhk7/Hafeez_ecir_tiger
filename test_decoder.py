@@ -7,9 +7,8 @@ import time
 from accelerate import Accelerator
 from data.processed import ItemData, RecDataset, SeqData
 from data.utils import batch_to, cycle, next_batch, describe_dataloader
-from evaluate.metrics import TopKAccumulator
+from evaluate.metrics import TopKAccumulator, FairnessAccumulator
 from modules.model import EncoderDecoderRetrievalModel
-from modules.scheduler.inv_sqrt import InverseSquareRootScheduler
 from modules.tokenizer.semids import SemanticIdTokenizer
 from modules.utils import compute_debug_metrics, parse_config, display_args, display_metrics, display_model_summary, set_seed
 from torch.optim import AdamW
@@ -30,6 +29,27 @@ if not logger.hasHandlers():
     handler = RichHandler(show_path=False)
     logger.addHandler(handler)
     logger.propagate = False
+    
+
+def create_item_brand_mapping(tokenizer, item_dataset):
+    item_brand_mapping = {}
+    
+    try:
+        if hasattr(tokenizer, 'cached_ids') and tokenizer.cached_ids is not None:
+            semantic_ids = tokenizer.cached_ids[:, :-1]
+            
+            for idx, semantic_id in enumerate(semantic_ids):
+                if idx < len(item_dataset.item_brand_id):
+                    brand_id = item_dataset.item_brand_id[idx]
+                    semantic_id_tuple = tuple(semantic_id.tolist())
+                    item_brand_mapping[semantic_id_tuple] = brand_id
+            
+            logger.info(f"Created brand mapping for {len(item_brand_mapping)} items")
+            
+    except Exception as e:
+        logger.warning(f"Could not create item-brand mapping: {e}")
+    
+    return item_brand_mapping
 
 def clamp_ids(tokenized_data, valid_max):
     valid_sem_id_min = tokenized_data.sem_ids.min().item()
@@ -40,13 +60,37 @@ def clamp_ids(tokenized_data, valid_max):
     )
     return tokenized_data
 
-def evaluate(model, test_dataloader, device, tokenizer, metrics_accumulator, use_image_features):
+
+def evaluate(model, test_dataloader, device, tokenizer, 
+             metrics_accumulator, fairness_accumulator,
+             item_dataset, 
+             use_image_features):
     # set model to evaluation mode
     model.eval()
     total_loss = 0
     debug_metrics = []
     num_batches = 0
     pbar = tqdm(test_dataloader, desc=f"Eval")
+    
+    # setup fairness accumulator
+    item_brand_mapping = None
+    if fairness_accumulator is not None:
+        item_brand_mapping = create_item_brand_mapping(tokenizer, item_dataset)
+        
+        if item_brand_mapping:
+            try:
+                if hasattr(item_dataset, 'data') and 'brand_mapping' in item_dataset.data:
+                    brand_mapping = item_dataset.data['brand_mapping']
+                else:
+                    brand_ids = set(item_dataset.item_brand_id[item_dataset.item_brand_id >= 0])
+                    brand_mapping = {brand_id: f"Brand_{brand_id}" for brand_id in brand_ids}
+                
+                fairness_accumulator.set_brand_mappings(item_brand_mapping, brand_mapping)
+                fairness_accumulator.set_auto_groups(dataset_folder=None, dataset_split=None)
+                logger.info("Fairness accumulator configured with brand mappings")
+            except Exception as e:
+                logger.warning(f"Could not configure fairness accumulator: {e}")
+                
     for batch in pbar:
         data = batch_to(batch, device)
         tokenized_data = tokenizer(data)
@@ -74,11 +118,23 @@ def evaluate(model, test_dataloader, device, tokenizer, metrics_accumulator, use
         metrics_accumulator.accumulate(
             actual=actual, top_k=top_k, tokenizer=tokenizer
         )
+        # calculte fairness metrics
+        fairness_accumulator.accumulate(
+                    actual=actual, 
+                    top_k=top_k, 
+                    user_ids=tokenized_data.user_ids,
+                    performance_scores=None,
+                    item_brand_mapping=item_brand_mapping)
         
     eval_metrics = metrics_accumulator.reduce()
     eval_metrics = {f"metrics/{k}": v for k, v in eval_metrics.items()}
     # reset the metrics accumulator
     metrics_accumulator.reset()
+    
+    fairness_metrics = fairness_accumulator.reduce()
+    fairness_metrics_prefixed = {f"fairness/{k}": v for k, v in fairness_metrics.items()}
+    eval_metrics.update(fairness_metrics_prefixed)
+    fairness_accumulator.reset()
     
     # average debug metrics
     averaged_debug_metrics = {}
@@ -260,10 +316,14 @@ def test(
     model = accelerator.prepare(model)
 
     metrics_accumulator = TopKAccumulator(ks=[1, 5, 10])
-
+    fairness_accumulator = FairnessAccumulator(ks=[1, 5, 10])
+    
     # starting the testing
     logger.info(f"Testing Started! - Debugging: {debug}")
-    eval_log = evaluate(model, test_dataloader, device, tokenizer, metrics_accumulator, use_image_features)
+    eval_log = evaluate(model, test_dataloader, device, tokenizer, 
+                        metrics_accumulator, fairness_accumulator, 
+                        item_dataset,
+                        use_image_features)
     
     # print eval metrics
     display_metrics(eval_log, title="Testing Metrics")
