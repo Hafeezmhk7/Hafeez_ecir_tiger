@@ -61,9 +61,9 @@ def train_iteration(model, optimizer, tokenizer,
     for _ in range(gradient_accumulate_every):
         data = next_batch(train_dataloader, device)
         tokenized_data = tokenizer(data)
-        if use_image_features:
-            valid_max = model.num_embeddings - 1
-            tokenized_data = clamp_ids(tokenized_data, valid_max)
+        # clamp sem ids
+        valid_max = model.num_embeddings - 1
+        tokenized_data = clamp_ids(tokenized_data, valid_max)
 
         with accelerator.autocast():
             model_output = model(tokenized_data)
@@ -147,9 +147,9 @@ def evaluate(model, eval_dataloader, device, tokenizer, metrics_accumulator, use
     for batch in pbar:
         data = batch_to(batch, device)
         tokenized_data = tokenizer(data)
-        if use_image_features:
-            valid_max = model.num_embeddings - 1
-            tokenized_data = clamp_ids(tokenized_data, valid_max)
+        # clamp sem ids
+        valid_max = model.num_embeddings - 1
+        tokenized_data = clamp_ids(tokenized_data, valid_max)
         model.enable_generation = False
         # debug metrics
         with torch.no_grad():
