@@ -60,6 +60,8 @@ class EncoderDecoderRetrievalModel(nn.Module):
         inference_verifier_fn,
         max_pos=2048,
         jagged_mode: bool = True,
+        rope=False,
+        prefix_matching=False,
     ) -> None:
         super().__init__()
 
@@ -81,12 +83,11 @@ class EncoderDecoderRetrievalModel(nn.Module):
             embeddings_dim=embedding_dim,
         )
         self.user_id_embedder = UserIdEmbedder(2000, embedding_dim)
-
-        self.wpe = nn.Embedding(num_embeddings=max_pos, embedding_dim=embedding_dim)
-        self.tte = nn.Embedding(num_embeddings=sem_id_dim, embedding_dim=embedding_dim)
-        self.tte_fut = nn.Embedding(
-            num_embeddings=sem_id_dim, embedding_dim=embedding_dim
-        )
+        self.rope = rope
+        self.prefix_matching = prefix_matching
+        if not self.rope:
+            self.wpe = nn.Embedding(num_embeddings=max_pos, embedding_dim=embedding_dim)
+            self.tte = nn.Embedding(num_embeddings=sem_id_dim, embedding_dim=embedding_dim)
 
         self.transformer = (
             TransformerEncoderDecoder(
@@ -96,6 +97,7 @@ class EncoderDecoderRetrievalModel(nn.Module):
                 num_heads=num_heads,
                 encoder_layers=n_layers // 2,
                 decoder_layers=n_layers // 2,
+                rope=self.rope,
             )
             if self.jagged_mode
             else nn.Transformer(
@@ -121,19 +123,26 @@ class EncoderDecoderRetrievalModel(nn.Module):
 
         B, N, D = sem_ids_emb.shape
 
-        pos_max = N // self.sem_id_dim
+        # pos_max = N // self.sem_id_dim
         # pos = torch.arange(pos_max, device=batch.sem_ids.device).repeat_interleave(self.sem_id_dim)
 
-        pos = torch.arange(N, device=sem_ids_emb.device).unsqueeze(0)
-        wpe = self.wpe(pos)
-
-        input_embedding = torch.cat([user_emb, wpe + sem_ids_emb], axis=1)
+        # positional embedding
+        if not self.rope:
+            pos = torch.arange(N, device=sem_ids_emb.device).unsqueeze(0)
+            wpe = self.wpe(pos)
+            input_embedding = torch.cat([user_emb, wpe + sem_ids_emb], axis=1)
+        else:
+            # using RoPE internally
+            input_embedding = torch.cat([user_emb, sem_ids_emb], axis=1)
         input_embedding_fut = self.bos_emb.repeat(B, 1, 1)
         if sem_ids_emb_fut is not None:
-            tte_fut = self.tte(batch.token_type_ids_fut)
-            input_embedding_fut = torch.cat(
-                [input_embedding_fut, sem_ids_emb_fut + tte_fut], axis=1
-            )
+            if not self.rope:
+                tte_fut = self.tte(batch.token_type_ids_fut)
+                input_embedding_fut = torch.cat(
+                    [input_embedding_fut, sem_ids_emb_fut + tte_fut], axis=1
+                )
+            else:
+                input_embedding_fut = torch.cat([input_embedding_fut, sem_ids_emb_fut], axis=1)
 
         if self.jagged_mode:
             input_embedding = padded_to_jagged_tensor(
@@ -219,10 +228,12 @@ class EncoderDecoderRetrievalModel(nn.Module):
             )
 
             if generated is None:
+                # for the first token, check validity of each candidate token
                 is_valid_prefix = self.inference_verifier_fn(
                     samples_batched.unsqueeze(-1)
                 )
             else:
+                # for subsequent tokens, check validity of each prefix formed by generated tokens + new candidate
                 prefix = torch.cat(
                     [
                         generated.flatten(0, 1)
@@ -239,18 +250,59 @@ class EncoderDecoderRetrievalModel(nn.Module):
             ).reshape(B, -1)
             samples = samples_batched.reshape(B, -1)
 
-            # Get top-K:
-            sorted_log_probas, sorted_indices = (
-                -10000 * (~is_valid_prefix)
-                + sampled_log_probas
-                + maybe_repeat_interleave(log_probas, n_top_k_candidates, dim=1)
-            ).sort(-1, descending=True)
+            if not self.prefix_matching:
+                # Get top-K:
+                sorted_log_probas, sorted_indices = (
+                    -10000 * (~is_valid_prefix)
+                    + sampled_log_probas
+                    + maybe_repeat_interleave(log_probas, n_top_k_candidates, dim=1)
+                ).sort(-1, descending=True)
 
-            top_k_log_probas, top_k_indices = (
-                sorted_log_probas[:, :k],
-                sorted_indices[:, :k],
-            )
-            top_k_samples = torch.gather(samples, 1, top_k_indices)
+                top_k_log_probas, top_k_indices = (
+                    sorted_log_probas[:, :k],
+                    sorted_indices[:, :k],
+                )
+                top_k_samples = torch.gather(samples, 1, top_k_indices)
+            else:
+                # prefix matching & filtering for top-K valid candidates
+                valid_mask = is_valid_prefix
+                # apply mask: retain log probs for valid candidates only
+                valid_log_probas = torch.where(
+                    valid_mask,
+                    sampled_log_probas + maybe_repeat_interleave(log_probas, n_top_k_candidates, dim=1),
+                    sampled_log_probas.new_full(sampled_log_probas.shape, float('-inf'))
+                )
+
+                # sort and get top-K valid candidates
+                sorted_log_probas, sorted_indices = valid_log_probas.sort(-1, descending=True)
+
+                # ensure we have enough valid candidates, if not expand beam
+                valid_counts = valid_mask.sum(dim=1)
+                min_valid = valid_counts.min()
+
+                if min_valid < k:
+                    # expand beam size dynamically
+                    k_actual = min(n_top_k_candidates, max(k, min_valid.item()))
+                else:
+                    k_actual = k
+
+                top_k_log_probas = sorted_log_probas[:, :k_actual]
+                top_k_indices = sorted_indices[:, :k_actual]
+                top_k_samples = torch.gather(samples, 1, top_k_indices)
+
+                # filter out any remaining invalid IDs (shouldn't happen but safety check)
+                final_valid_mask = torch.gather(valid_mask, 1, top_k_indices)
+                if not final_valid_mask.all():
+                    # Fallback: keep only valid ones, pad if necessary
+                    for b in range(B):
+                        valid_idx = final_valid_mask[b].nonzero(as_tuple=True)[0]
+                        if len(valid_idx) < k:
+                            # pad with best valid candidate
+                            pad_size = k - len(valid_idx)
+                            valid_idx = torch.cat([valid_idx, valid_idx[:1].repeat(pad_size)])
+                        
+                        top_k_samples[b] = top_k_samples[b][valid_idx[:k]]
+                        top_k_log_probas[b] = top_k_log_probas[b][valid_idx[:k]]
 
             if generated is not None:
                 parent_id = torch.gather(

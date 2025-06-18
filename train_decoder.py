@@ -221,6 +221,8 @@ def train(
     attn_heads=8,
     attn_embed_dim=64,
     attn_layers=4,
+    rope=False,
+    prefix_matching=False,
     dataset_split="beauty",
     train_data_subsample=True,
     model_jagged_mode=True,
@@ -350,6 +352,8 @@ def train(
         sem_id_dim=tokenizer.sem_ids_dim,
         max_pos=train_dataset.max_seq_len * tokenizer.sem_ids_dim,
         jagged_mode=model_jagged_mode,
+        rope=rope,
+        prefix_matching=prefix_matching,
     )
     display_model_summary(model, device)
 

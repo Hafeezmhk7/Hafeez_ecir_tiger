@@ -29,6 +29,7 @@ class TransformerBlock(nn.Module):
         mlp_hidden_dims: List[int] = [1024],
         do_cross_attn: bool = False,
         enable_kv_cache: bool = True,
+        rope: bool = False,
     ) -> None:
         super().__init__()
 
@@ -47,6 +48,7 @@ class TransformerBlock(nn.Module):
             dropout=dropout,
             qkv_bias=qkv_bias,
             enable_kv_cache=enable_kv_cache,
+            rope=rope,
         )
 
         self.ff = nn.Sequential(
@@ -73,6 +75,7 @@ class TransformerBlock(nn.Module):
                 cross_attn=True,
                 dropout=dropout,
                 qkv_bias=qkv_bias,
+                rope=rope,
             )
             self.cross_attn_norm = RMSNorm(d_out)
 
@@ -124,6 +127,7 @@ class TransformerDecoder(nn.Module, KVCacheOpsMixin):
         n_layers: int,
         do_cross_attn: bool = False,
         enable_kv_cache: bool = True,
+        rope: bool = False,
     ) -> None:
         super().__init__()
 
@@ -139,6 +143,7 @@ class TransformerDecoder(nn.Module, KVCacheOpsMixin):
                     qkv_bias=False,
                     do_cross_attn=self.do_cross_attn,
                     enable_kv_cache=enable_kv_cache,
+                    rope=rope,
                 )
                 for _ in range(n_layers)
             ]
@@ -176,6 +181,7 @@ class TransformerEncoderDecoder(nn.Module, KVCacheOpsMixin):
         num_heads: int,
         encoder_layers: int,
         decoder_layers: int,
+        rope: bool = False,
     ) -> None:
         super().__init__()
 
@@ -187,6 +193,7 @@ class TransformerEncoderDecoder(nn.Module, KVCacheOpsMixin):
             n_layers=encoder_layers,
             do_cross_attn=False,
             enable_kv_cache=False,
+            rope=rope,
         )
 
         self.decoder = TransformerDecoder(
@@ -197,6 +204,7 @@ class TransformerEncoderDecoder(nn.Module, KVCacheOpsMixin):
             n_layers=decoder_layers,
             do_cross_attn=True,
             enable_kv_cache=False,
+            rope=rope,
         )
 
         self.layers = [self.encoder, self.decoder]

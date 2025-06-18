@@ -13,6 +13,48 @@ torch.backends.cuda.enable_flash_sdp(True)
 
 AttentionInput = Union[Tensor, NestedTensor]
 
+class RoPEEmbedding(nn.Module):
+    def __init__(self, dim, max_seq_len=2048, base=10000):
+        super().__init__()
+        self.dim = dim
+        self.max_seq_len = max_seq_len
+        self.base = base
+        
+        # Precompute frequency inverse
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer('inv_freq', inv_freq)
+        
+        # Precompute cos and sin for max sequence length
+        t = torch.arange(max_seq_len, dtype=torch.float32)
+        freqs = torch.outer(t, inv_freq)
+        self.register_buffer('cos_cached', freqs.cos())
+        self.register_buffer('sin_cached', freqs.sin())
+    
+    def forward(self, x, seq_len=None):
+        if seq_len is None:
+            seq_len = x.shape[-2]
+        
+        cos = self.cos_cached[:seq_len, :]
+        sin = self.sin_cached[:seq_len, :]
+        
+        return cos, sin
+
+
+def apply_rotary_pos_emb(x, cos, sin):
+    """Apply rotary positional embedding to input tensor x"""
+    # Split the last dimension into pairs
+    x1, x2 = x[..., ::2], x[..., 1::2]
+    
+    # Apply rotation
+    # cos and sin shapes: (seq_len, head_dim//2)
+    # x1, x2 shapes: (..., seq_len, head_dim//2)
+    rotated_x1 = x1 * cos - x2 * sin
+    rotated_x2 = x1 * sin + x2 * cos
+    
+    # Interleave back
+    rotated_x = torch.stack([rotated_x1, rotated_x2], dim=-1).flatten(-2)
+    return rotated_x
+
 
 class KVCache(nn.Module):
     def __init__(self, dim):
@@ -110,13 +152,16 @@ class KVCache(nn.Module):
 
 
 class Attend(nn.Module):
-    def __init__(self, d_out, num_heads, head_dim, dropout):
+    def __init__(self, d_out, num_heads, head_dim, dropout, use_rope=False):
         super().__init__()
 
         self.num_heads = num_heads
         self.head_dim = head_dim
         self.d_out = d_out
         self.dropout = dropout
+        self.use_rope = use_rope
+        if self.use_rope:
+            self.rope = RoPEEmbedding(self.head_dim)
 
     def jagged_forward(
         self, qu: NestedTensor, ke: NestedTensor, va: NestedTensor, is_causal: bool
@@ -124,6 +169,17 @@ class Attend(nn.Module):
         queries = qu.unflatten(-1, [self.num_heads, self.head_dim]).transpose(1, 2)
         keys = ke.unflatten(-1, [self.num_heads, self.head_dim]).transpose(1, 2)
         values = va.unflatten(-1, [self.num_heads, self.head_dim]).transpose(1, 2)
+
+        if self.use_rope:
+            # apply RoPE to queries and keys
+            seq_len = queries.shape[-2]
+            cos, sin = self.rope(queries, seq_len)
+            # reshape cos/sin for broadcasting: (seq_len, head_dim) -> (1, 1, seq_len, head_dim)
+            cos = cos.unsqueeze(0).unsqueeze(0)
+            sin = sin.unsqueeze(0).unsqueeze(0)
+            # apply rope
+            queries = apply_rotary_pos_emb(queries, cos, sin)
+            keys = apply_rotary_pos_emb(keys, cos, sin)
 
         dropout_p = 0.0 if not self.training else self.dropout
 
@@ -144,6 +200,16 @@ class Attend(nn.Module):
 
         # (3, b, num_heads, num_tokens, head_dim) -> 3 times (b, num_heads, num_tokens, head_dim)
         queries, keys, values = qkv
+
+        if self.use_rope:
+            # apply RoPE to queries and keys
+            cos, sin = self.rope(queries, num_tokens)
+            # reshape cos/sin for broadcasting: (seq_len, head_dim) -> (1, 1, seq_len, head_dim)
+            cos = cos.unsqueeze(0).unsqueeze(0)
+            sin = sin.unsqueeze(0).unsqueeze(0)
+            # apply rope
+            queries = apply_rotary_pos_emb(queries, cos, sin)
+            keys = apply_rotary_pos_emb(keys, cos, sin)
 
         use_dropout = 0.0 if not self.training else self.dropout
 
@@ -175,6 +241,7 @@ class MultiHeadAttention(nn.Module):
         dropout=0.0,
         qkv_bias=False,
         enable_kv_cache=False,
+        rope=False,
     ) -> None:
         super().__init__()
 
@@ -195,7 +262,7 @@ class MultiHeadAttention(nn.Module):
 
         self.proj = nn.Linear(d_out, d_out, bias=False)
 
-        self.attend = Attend(self.d_out, self.num_heads, self.head_dim, dropout=False)
+        self.attend = Attend(self.d_out, self.num_heads, self.head_dim, dropout=False, use_rope=rope)
 
         self._kv_cache = (
             KVCache((2560, 80, 384)) if enable_kv_cache else None
