@@ -302,6 +302,9 @@ def train(
         data_split="train",
         subsample=train_data_subsample,
         split=dataset_split,
+        use_image_features=use_image_features,
+        feature_combination_mode=feature_combination_mode,
+        device=device,
     )
     train_dataloader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True)
@@ -315,6 +318,9 @@ def train(
         data_split="test",
         subsample=False,
         split=dataset_split,
+        use_image_features=use_image_features,
+        feature_combination_mode=feature_combination_mode,
+        device=device,
     )
     eval_dataloader = DataLoader(
         eval_dataset, batch_size=batch_size, shuffle=True)

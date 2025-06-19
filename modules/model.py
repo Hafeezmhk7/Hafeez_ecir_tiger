@@ -297,9 +297,13 @@ class EncoderDecoderRetrievalModel(nn.Module):
                     for b in range(B):
                         valid_idx = final_valid_mask[b].nonzero(as_tuple=True)[0]
                         if len(valid_idx) < k:
-                            # pad with best valid candidate
-                            pad_size = k - len(valid_idx)
-                            valid_idx = torch.cat([valid_idx, valid_idx[:1].repeat(pad_size)])
+                            if len(valid_idx) == 0:
+                                # fallback to first `k` candidates regardless of validity
+                                valid_idx = torch.arange(k, device=top_k_samples.device)
+                            else:
+                                # pad with best valid candidate
+                                pad_size = k - len(valid_idx)
+                                valid_idx = torch.cat([valid_idx, valid_idx[:1].repeat(pad_size)])
                         
                         top_k_samples[b] = top_k_samples[b][valid_idx[:k]]
                         top_k_log_probas[b] = top_k_log_probas[b][valid_idx[:k]]

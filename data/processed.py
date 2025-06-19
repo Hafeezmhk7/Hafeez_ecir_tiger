@@ -113,7 +113,7 @@ class ItemData(Dataset):
         return self.item_data.shape[0]
 
     def _precompute_image_features(self):
-        logger.info("Pre-computing image features ...")
+        logger.info(f"Pre-computing image features for `{self.__class__.__name__}`")
         
         # create CLIP model temporarily for feature extraction
         img_model = CLIPImageEncoder(device=self.device)
@@ -197,6 +197,9 @@ class SeqData(Dataset):
         force_process: bool = False,
         dataset: RecDataset = RecDataset.ML_1M,
         data_split: str = "train",
+        use_image_features: bool = False,
+        feature_combination_mode: str = "sum",
+        device: str = "cpu",
         **kwargs
     ) -> None:
 
@@ -225,6 +228,18 @@ class SeqData(Dataset):
         self._max_seq_len = max_seq_len
         self.item_data = raw_data.data["item"]["x"]
         self.item_brand_id = raw_data.data["item"]["brand_id"]
+        self.use_image_features = use_image_features
+        self.device = device
+        self.feature_combination_mode = feature_combination_mode
+        self.root = root
+        
+        if self.use_image_features:
+            self.dataset_split = kwargs.get("split")
+            with open(os.path.join(self.root, "raw", self.dataset_split, "datamaps.json"), "r") as f:
+                self.data_maps = json.load(f)
+
+            # pre-compute all image features
+            self.image_features = self._precompute_image_features()
 
     @property
     def max_seq_len(self):
@@ -232,7 +247,49 @@ class SeqData(Dataset):
 
     def __len__(self):
         return self.sequence_data["userId"].shape[0]
-
+    
+    def _precompute_image_features(self):
+        logger.info(f"Pre-computing image features for `{self.__class__.__name__}`")
+        
+        # create CLIP model temporarily for feature extraction
+        img_model = CLIPImageEncoder(device=self.device)
+        
+        image_features = []
+        batch_size = 128
+        
+        for i in tqdm(range(0, len(self), batch_size)):
+            batch_end = min(i + batch_size, len(self))
+            batch_images = []
+            
+            for idx in range(i, batch_end):
+                img_id = str(idx + 1)
+                img_filename = self.data_maps["id2item"][img_id] + ".jpg"
+                img_path = os.path.join(self.root, "raw", self.dataset_split, "product_images", img_filename)
+        
+                try:
+                    image = Image.open(img_path).convert("RGB")
+                    image_tensor = img_model.preprocess(image)
+                except Exception:
+                    image_tensor = torch.zeros((3, 224, 224))
+                batch_images.append(image_tensor)
+            
+            # process batch
+            batch_images = torch.stack(batch_images).to(self.device)
+            with torch.no_grad():
+                batch_features = img_model.clip_model.encode_image(batch_images)
+                batch_features = batch_features / batch_features.norm(dim=1, keepdim=True)
+            
+            image_features.append(batch_features.cpu())  # move to CPU to save GPU memory
+        
+        # concatenate all features
+        all_features = torch.cat(image_features, dim=0)
+        
+        # clean up the temporary model
+        del img_model
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        
+        return all_features
+    
     def __getitem__(self, idx):
         user_ids = self.sequence_data["userId"][idx]
 
@@ -259,14 +316,25 @@ class SeqData(Dataset):
         x_brand_id[item_ids == -1] = -1.0
 
         x = self.item_data[item_ids, :768]
-        x[item_ids == -1] = -1
-
         x_fut = self.item_data[item_ids_fut]
         x_fut[item_ids_fut == -1] = -1
-
-        x_fut_brand_id = torch.Tensor(
-            self.item_brand_id[item_ids_fut] if item_ids_fut != -1 else -1
-        )
+        
+        # use pre-computed image features
+        if self.use_image_features and self.image_features is not None:
+            if isinstance(idx, (int, np.integer)):
+                image_features = self.image_features[idx:idx+1].to(x.device)
+            else:
+                image_features = self.image_features[idx].to(x.device)
+            
+            # add image features to x
+            if self.feature_combination_mode == "sum":
+                x = x.unsqueeze(0) if x.dim() == 1 else x
+                x = x + image_features
+            elif self.feature_combination_mode == "concat":
+                x = torch.cat([x, image_features], dim=-1)
+        
+        # masking invalid ids    
+        x[item_ids == -1] = -1
 
         return SeqBatch(
             user_ids=user_ids,
