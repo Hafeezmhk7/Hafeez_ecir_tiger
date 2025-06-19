@@ -256,13 +256,14 @@ class SeqData(Dataset):
         
         image_features = []
         batch_size = 128
+        id2item_keys = list(self.data_maps["id2item"].keys())
         
-        for i in tqdm(range(0, len(self), batch_size)):
-            batch_end = min(i + batch_size, len(self))
+        for i in tqdm(range(0, self.item_data.shape[0], batch_size)):
+            batch_end = min(i + batch_size, len(id2item_keys))
             batch_images = []
             
             for idx in range(i, batch_end):
-                img_id = str(idx + 1)
+                img_id = id2item_keys[idx]
                 img_filename = self.data_maps["id2item"][img_id] + ".jpg"
                 img_path = os.path.join(self.root, "raw", self.dataset_split, "product_images", img_filename)
         
@@ -321,17 +322,13 @@ class SeqData(Dataset):
         
         # use pre-computed image features
         if self.use_image_features and self.image_features is not None:
-            if isinstance(idx, (int, np.integer)):
-                image_features = self.image_features[idx:idx+1].to(x.device)
-            else:
-                image_features = self.image_features[idx].to(x.device)
-            
-            # add image features to x
-            if self.feature_combination_mode == "sum":
-                x = x.unsqueeze(0) if x.dim() == 1 else x
-                x = x + image_features
-            elif self.feature_combination_mode == "concat":
-                x = torch.cat([x, image_features], dim=-1)
+            valid_item_mask = item_ids >= 0
+            if valid_item_mask.any():
+                image_features = self.image_features[item_ids[valid_item_mask]].to(x.device)
+                if self.feature_combination_mode == "sum":
+                    x[valid_item_mask] = x[valid_item_mask] + image_features
+                elif self.feature_combination_mode == "concat":
+                    x = torch.cat([x, image_features], dim=-1)
         
         # masking invalid ids    
         x[item_ids == -1] = -1
