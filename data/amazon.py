@@ -167,6 +167,8 @@ class AmazonReviews(InMemoryDataset, PreprocessingMixin):
                 .sort_values(by="id")
                 .fillna({"brand": "Unknown"})
             )
+            # save item data
+            item_data.to_csv(f"{self.root}/{self.split}/item_data.csv", index=False)
         else:
             item_data = (
                 pd.DataFrame(
