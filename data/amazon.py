@@ -6,7 +6,7 @@ import os.path as osp
 import pandas as pd
 import polars as pl
 import torch
-
+from tqdm import tqdm
 from collections import defaultdict
 from data.preprocessing import PreprocessingMixin
 from torch_geometric.data import download_google_url
@@ -28,6 +28,10 @@ def parse(path):
     for l in g:
         yield eval(l)
 
+def parse_2023(path):
+    with gzip.open(path, 'rt', encoding='utf-8') as f:
+        for line in tqdm(f, desc=f"Parsing {path}"):
+            yield json.loads(line)
 
 class AmazonReviews(InMemoryDataset, PreprocessingMixin):
     gdrive_id = "1qGxgmx7G_WB7JE4Cn_bEcZ_o_NAJLE3G"
@@ -43,6 +47,7 @@ class AmazonReviews(InMemoryDataset, PreprocessingMixin):
         category="brand",
     ) -> None:
         self.split = split
+        self.year = int(root.split("/")[-1]) # extract dataset year from the path
         self.brand_mapping = {}  # Dictionary to store brand_id -> brand_name mapping
         self.category = category
         super(AmazonReviews, self).__init__(
@@ -144,19 +149,38 @@ class AmazonReviews(InMemoryDataset, PreprocessingMixin):
                 for k, v in data_maps["item2id"].items()
             ]
         )
-        item_data = (
-            pd.DataFrame(
+        
+        if self.year == 2023:
+            meta_df =  pd.DataFrame(
                 [
                     meta
-                    for meta in parse(
+                    for meta in parse_2023(
                         path=os.path.join(self.raw_dir, self.split, "meta.json.gz")
                     )
                 ]
             )
-            .merge(asin2id, on="asin")
-            .sort_values(by="id")
-            .fillna({"brand": "Unknown"})
-        )
+            # process meta df
+            meta_df.rename(columns={"parent_asin": "asin"}, inplace=True)
+            meta_df["brand"] = meta_df["details"].apply(lambda x: eval(x).get("Brand", "Unknown"))
+            item_data = (meta_df
+                .merge(asin2id, on="asin")
+                .sort_values(by="id")
+                .fillna({"brand": "Unknown"})
+            )
+        else:
+            item_data = (
+                pd.DataFrame(
+                    [
+                        meta
+                        for meta in parse(
+                            path=os.path.join(self.raw_dir, self.split, "meta.json.gz")
+                        )
+                    ]
+                )
+                .merge(asin2id, on="asin")
+                .sort_values(by="id")
+                .fillna({"brand": "Unknown"})
+            )
 
         # Create brand mapping
         unique_brands = item_data[self.category].unique()
@@ -168,21 +192,41 @@ class AmazonReviews(InMemoryDataset, PreprocessingMixin):
         # Add brand_id to item_data
         item_data["brand_id"] = item_data["brand"].map(lambda x: brand_to_id.get(x, -1))
 
-        sentences = item_data.apply(
-            lambda row: "Title: "
-            + str(row["title"])
-            + "; "
-            + "Brand: "
-            + str(row["brand"])
-            + "; "
-            + "Categories: "
-            + str(row["categories"][0])
-            + "; "
-            + "Price: "
-            + str(row["price"])
-            + "; ",
-            axis=1,
-        )
+        if self.year == 2023:
+            sentences = item_data.apply(
+                lambda row: "Title: "
+                + str(row["title"])
+                + "; "
+                + "Brand: "
+                + str(row["brand"])
+                + "; "
+                + "Categories: "
+                + (str(row["categories"]) if row["categories"] else f'[{row["main_category"]}]')
+                + "; "
+                + "Rating: "
+                + str(row["average_rating"])
+                + "; "
+                + "Price: "
+                + str(row["price"])
+                + "; ",
+                axis=1,
+            )
+        else:
+            sentences = item_data.apply(
+                lambda row: "Title: "
+                + str(row["title"])
+                + "; "
+                + "Brand: "
+                + str(row["brand"])
+                + "; "
+                + "Categories: "
+                + str(row["categories"][0])
+                + "; "
+                + "Price: "
+                + str(row["price"])
+                + "; ",
+                axis=1,
+            )
 
         # Store brand_id instead of brand name
         brand_ids = item_data.apply(lambda row: row["brand_id"], axis=1)
