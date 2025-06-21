@@ -391,7 +391,7 @@ def filter_Kcore(user_items, user_core, item_core):  # user 接所有items
     return user_items
 
 
-def id_map(user_items):  # user_items dict
+def id_map_old(user_items):  # user_items dict
     user2id = {}  # raw 2 uid
     item2id = {}  # raw 2 iid
     id2user = {}  # uid 2 raw
@@ -425,7 +425,57 @@ def id_map(user_items):  # user_items dict
     return final_data, user_id-1, item_id-1, data_maps
 
 
-def main(dataset_dir, data_name, acronym, data_type='Amazon'):
+def id_map_new(user_items): # user_items dict
+    """
+    From the TIGER author
+    """
+    user2id = {} # raw 2 uid
+    item2id = {} # raw 2 iid
+    id2user = {} # uid 2 raw
+    id2item = {} # iid 2 raw
+    user_id = 0
+    item_id = 0
+    final_data = {}
+    random_user_list = list(user_items.keys())
+    random.shuffle(random_user_list)
+    
+    user_set = set()
+    item_set = set()
+    for user in random_user_list:
+        user_set.add(user)
+        items = user_items[user]
+        item_set.update(items)
+        
+    random_user_mapping = [str(i+1) for i in range(len(user_set))]
+    random_item_mapping = [str(i+1) for i in range(len(item_set))]
+    random.shuffle(random_user_mapping)
+    random.shuffle(random_item_mapping)
+    
+    for user in random_user_list:
+        items = user_items[user]
+        if user not in user2id:
+            user2id[user] = str(random_user_mapping[user_id])
+            id2user[str(random_user_mapping[user_id])] = user
+            user_id += 1
+        iids = [] # item id lists
+        for item in items:
+            if item not in item2id:
+                item2id[item] = str(random_item_mapping[item_id])
+                id2item[str(random_item_mapping[item_id])] = item
+                item_id += 1
+            iids.append(item2id[item])
+        uid = user2id[user]
+        final_data[uid] = iids
+    data_maps = {
+        'user2id': user2id,
+        'item2id': item2id,
+        'id2user': id2user,
+        'id2item': id2item
+    }
+    return final_data, user_id, item_id, data_maps
+
+
+def main(dataset_dir, data_name, acronym, data_type='Amazon', new_session_creator=True):
     assert data_type in {'Amazon', 'Yelp'}
     rating_score = 0.0  # rating score smaller than this score would be deleted
     # user 5-core item 5-core
@@ -448,7 +498,10 @@ def main(dataset_dir, data_name, acronym, data_type='Amazon'):
         user_items, user_core=user_core, item_core=item_core)
     logger.info(f'User {user_core}-core complete! Item {item_core}-core complete!')
 
-    user_items, user_num, item_num, data_maps = id_map(user_items)
+    if new_session_creator:
+        user_items, user_num, item_num, data_maps = id_map_new(user_items)
+    else:
+        user_items, user_num, item_num, data_maps = id_map_old(user_items)
     user_count, item_count, _ = check_Kcore(
         user_items, user_core=user_core, item_core=item_core)
     user_count_list = list(user_count.values())
@@ -507,9 +560,11 @@ if __name__ == "__main__":
     parser.add_argument('--dataset_dir', type=str, default="../dataset/amazon/2023/raw",
                         help='Directory containing the dataset')
     parser.add_argument('--dataset_split', type=str,
-                        default="software", help='Dataset split to process')
+                        default="beauty", help='Dataset split to process')
     parser.add_argument('--data_type', type=str,
                         default="Amazon", help='Parent Dataset Type')
+    parser.add_argument('--new_session_creator', type=bool,
+                        default=True, help='Old or New Session Creator')
     args = parser.parse_args()
     display_args(args)
 
@@ -519,7 +574,8 @@ if __name__ == "__main__":
     data_type = args.data_type
     category = args.dataset_split
     dataset_dir = args.dataset_dir
+    new_session_creator = args.new_session_creator
     os.makedirs(os.path.join(dataset_dir, category), exist_ok=True)
 
     # start processing
-    main(dataset_dir, DATA_NAME_MAP[category], category, data_type=data_type)
+    main(dataset_dir, DATA_NAME_MAP[category], category, data_type, new_session_creator)

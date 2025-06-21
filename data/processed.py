@@ -175,6 +175,8 @@ class ItemData(Dataset):
                 x = x + image_features
             elif self.feature_combination_mode == "concat":
                 x = torch.cat([x, image_features], dim=-1)
+            else:
+                raise ValueError("Invalid feature combination mode!")
 
         return SeqBatch(
             user_ids=-1 * torch.ones_like(item_ids.squeeze(0)),
@@ -329,6 +331,8 @@ class SeqData(Dataset):
                     x[valid_item_mask] = x[valid_item_mask] + image_features
                 elif self.feature_combination_mode == "concat":
                     x = torch.cat([x, image_features], dim=-1)
+                else:
+                    raise ValueError("Invalid feature combination mode!")
         
         # masking invalid ids    
         x[item_ids == -1] = -1
