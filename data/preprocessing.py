@@ -2,7 +2,10 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import torch
-from data.schemas import FUT_SUFFIX
+try:
+    from data.schemas import FUT_SUFFIX
+except:
+    from schemas import FUT_SUFFIX
 from einops import rearrange
 from sentence_transformers import SentenceTransformer
 from typing import List

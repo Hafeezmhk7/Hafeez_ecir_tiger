@@ -8,7 +8,10 @@ import polars as pl
 import torch
 from tqdm import tqdm
 from collections import defaultdict
-from data.preprocessing import PreprocessingMixin
+try:
+    from data.preprocessing import PreprocessingMixin
+except:
+    from preprocessing import PreprocessingMixin
 from torch_geometric.data import download_google_url
 from torch_geometric.data import extract_zip
 from torch_geometric.data import HeteroData
@@ -64,12 +67,13 @@ class AmazonReviews(InMemoryDataset, PreprocessingMixin):
         return f"data_{self.split}.pt"
 
     def download(self) -> None:
-        path = download_google_url(self.gdrive_id, self.root, self.gdrive_filename)
-        extract_zip(path, self.root)
-        os.remove(path)
-        folder = osp.join(self.root, "data")
-        fs.rm(self.raw_dir)
-        os.rename(folder, self.raw_dir)
+        if not self.year == 2023:
+            path = download_google_url(self.gdrive_id, self.root, self.gdrive_filename)
+            extract_zip(path, self.root)
+            os.remove(path)
+            folder = osp.join(self.root, "data")
+            fs.rm(self.raw_dir)
+            os.rename(folder, self.raw_dir)
 
     def _remap_ids(self, x):
         return x - 1
@@ -167,8 +171,6 @@ class AmazonReviews(InMemoryDataset, PreprocessingMixin):
                 .sort_values(by="id")
                 .fillna({"brand": "Unknown"})
             )
-            # save item data
-            item_data.to_csv(f"{self.root}/{self.split}/item_data.csv", index=False)
         else:
             item_data = (
                 pd.DataFrame(
@@ -184,6 +186,10 @@ class AmazonReviews(InMemoryDataset, PreprocessingMixin):
                 .fillna({"brand": "Unknown"})
             )
 
+        # save item data
+        raw_folder = osp.join(self.root, "raw", self.split)
+        item_data.to_csv(os.path.join(raw_folder, "item_data.csv"), index=False)
+        
         # Create brand mapping
         unique_brands = item_data[self.category].unique()
         self.brand_mapping = {i: brand for i, brand in enumerate(unique_brands)}
@@ -255,3 +261,9 @@ class AmazonReviews(InMemoryDataset, PreprocessingMixin):
         )
         with open(brand_mapping_path, "w") as f:
             json.dump(self.brand_mapping, f)
+
+
+if __name__ == "__main__":
+    root = "dataset/amazon/2023"
+    split = "beauty"
+    AmazonReviews(root, split)
