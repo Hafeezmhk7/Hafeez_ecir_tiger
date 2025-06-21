@@ -42,7 +42,8 @@ DATA_NAME_MAP = {
     'toys': 'Toys_and_Games',
     'sports': 'Sports_and_Outdoors',
     'games': 'Video_Games',
-    'software': "Software",
+    'software': 'Software',
+    'appliances': "Appliances",
 }
 INVERSE_DATA_NAME_MAP = {v: k for k, v in DATA_NAME_MAP.items()}
 
@@ -563,7 +564,7 @@ if __name__ == "__main__":
                         default="beauty", help='Dataset split to process')
     parser.add_argument('--data_type', type=str,
                         default="Amazon", help='Parent Dataset Type')
-    parser.add_argument('--new_session_creator', type=bool,
+    parser.add_argument('--new_session_creator', action='store_false',
                         default=True, help='Old or New Session Creator')
     args = parser.parse_args()
     display_args(args)

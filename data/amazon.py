@@ -51,6 +51,7 @@ class AmazonReviews(InMemoryDataset, PreprocessingMixin):
     ) -> None:
         self.split = split
         self.year = int(root.split("/")[-1]) # extract dataset year from the path
+        logger.info(f"Using Amazon {self.year} data")
         self.brand_mapping = {}  # Dictionary to store brand_id -> brand_name mapping
         self.category = category
         super(AmazonReviews, self).__init__(
