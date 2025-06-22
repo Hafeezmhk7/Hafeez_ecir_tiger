@@ -130,20 +130,21 @@ def train_iteration(
     
     # evaluate model
     if accelerator.is_main_process:
+        # save model checkpoint
+        if ((iteration + 1) % save_model_every == 0 or (iteration + 1) == iterations):
+            state = {
+                "iteration": iteration+1,
+                "model": model.state_dict(),
+                "model_config": model.config,
+                "optimizer": optimizer.state_dict(),
+            }
+            torch.save(state, f"{log_dir}/checkpoint_{iteration+1}.pt")
+            logger.info(f'Iteration {iteration}: Model saved.')
+            
         if ((iteration + 1) % eval_every == 0 or (iteration + 1) == iterations):
+            # start evaluation 
             logger.info('Evaluation Started!')
             eval_log = evaluate(model, eval_dataloader, device, t=t)
-
-            # save model checkpoint
-            if ((iteration + 1) % save_model_every == 0 or (iteration + 1) == iterations):
-                state = {
-                    "iteration": iteration+1,
-                    "model": model.state_dict(),
-                    "model_config": model.config,
-                    "optimizer": optimizer.state_dict(),
-                }
-                torch.save(state, f"{log_dir}/checkpoint_{iteration+1}.pt")
-                logger.info(f'Iteration {iteration}: Model saved.')
 
             # log entropy and duplicates
             tokenizer.reset()

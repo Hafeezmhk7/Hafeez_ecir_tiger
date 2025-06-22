@@ -109,21 +109,22 @@ def train_iteration(model, optimizer, tokenizer,
 
     # evaluate model
     if accelerator.is_main_process:
+        # save model checkpoint
+        if ((iteration + 1) % save_model_every == 0 or (iteration + 1) == iterations):
+            state = {
+                "iteration": iteration+1,
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "scheduler": lr_scheduler.state_dict(),
+            }
+            torch.save(state, f"{log_dir}/checkpoint_{iteration+1}.pt")
+            logger.info(f'Iteration {iteration}: Model saved.')
+            
         if ((iteration + 1) % eval_every == 0 or (iteration + 1) == iterations):
+            # start evaluation    
             logger.info('Evaluation Started!')
             eval_log = evaluate(model, eval_dataloader, device, tokenizer, 
                                 metrics_accumulator, use_image_features)
-            
-            # save model checkpoint
-            if ((iteration + 1) % save_model_every == 0 or (iteration + 1) == iterations):
-                state = {
-                    "iteration": iteration+1,
-                    "model": model.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "scheduler": lr_scheduler.state_dict(),
-                }
-                torch.save(state, f"{log_dir}/checkpoint_{iteration+1}.pt")
-                logger.info(f'Iteration {iteration}: Model saved.')
             
             # print eval metrics
             display_metrics(eval_log, title="Evaluation Metrics")
