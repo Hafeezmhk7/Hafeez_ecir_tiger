@@ -323,7 +323,7 @@ def train(
         device=device,
     )
     eval_dataloader = DataLoader(
-        eval_dataset, batch_size=batch_size, shuffle=True)
+        eval_dataset, batch_size=batch_size*2, shuffle=True)
     describe_dataloader(eval_dataloader, title="Eval DataLoader Summary")
     train_dataloader, eval_dataloader = accelerator.prepare(
         train_dataloader, eval_dataloader

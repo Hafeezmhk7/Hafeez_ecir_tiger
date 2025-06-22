@@ -234,9 +234,16 @@ class SeqData(Dataset):
         self.device = device
         self.feature_combination_mode = feature_combination_mode
         self.root = root
+        self.dataset_split = kwargs.get("split")
+        
+        if self.data_split in ["eval", "test"] and "2023" in self.root:
+            # keep N%/25k users for faster eval
+            if self.dataset_split in ["sports", "toys", "software", "games", "appliances"]:
+                split_fraction = 25_000 / len(self.sequence_data["userId"])
+                logger.info(f"Splitting the `{self.data_split}` SeqData into `{int(split_fraction*100)}%` to save compute!")
+                self.filter_by_user_fraction(split_fraction)
         
         if self.use_image_features:
-            self.dataset_split = kwargs.get("split")
             with open(os.path.join(self.root, "raw", self.dataset_split, "datamaps.json"), "r") as f:
                 self.data_maps = json.load(f)
 
@@ -250,6 +257,28 @@ class SeqData(Dataset):
     def __len__(self):
         return self.sequence_data["userId"].shape[0]
     
+    def filter_by_user_fraction(self, fraction: float = 0.05):
+        # get unique user IDs
+        all_users = self.sequence_data["userId"].unique()        
+        
+        # sample fraction of users using numpy
+        if hasattr(all_users, 'to_numpy'):
+            # if it's a Polars Series
+            users_array = all_users.to_numpy()
+        else:
+            # if it's already a numpy array or tensor
+            users_array = np.array(all_users)
+        
+        n_sample = int(len(users_array) * fraction)
+        sampled_indices = np.random.choice(len(users_array), size=n_sample, replace=False)
+        sampled_users = users_array[sampled_indices]
+        # filter rows to keep only those users
+        user_ids = self.sequence_data["userId"]
+        sampled_users_tensor = torch.tensor(sampled_users, device=user_ids.device)
+        user_mask = torch.isin(user_ids, sampled_users_tensor).view(-1)
+        for key in self.sequence_data:
+            self.sequence_data[key] = self.sequence_data[key][user_mask]
+
     def _precompute_image_features(self):
         logger.info(f"Pre-computing image features for `{self.__class__.__name__}`")
         
@@ -314,7 +343,7 @@ class SeqData(Dataset):
             item_ids = self.sequence_data["itemId"][idx]
             item_ids_fut = self.sequence_data["itemId_fut"][idx]
 
-        assert (item_ids >= -1).all(), "Invalid movie id found"
+        assert (item_ids >= -1).all(), "Invalid item id found"
         x_brand_id = torch.Tensor(self.item_brand_id[item_ids])
         x_brand_id[item_ids == -1] = -1.0
 
