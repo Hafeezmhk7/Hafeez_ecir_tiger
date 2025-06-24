@@ -100,9 +100,10 @@ class ItemData(Dataset):
             raw_data.data["item"]["text"][filt],
             raw_data.data["item"]["brand_id"][filt],
         )
+        self.dataset_split = kwargs.get("split")
+        logger.info(f"For `{self.dataset_split}` using the datapath: {processed_data_path}")
 
         if self.use_image_features:
-            self.dataset_split = kwargs.get("split")
             with open(os.path.join(self.root, "raw", self.dataset_split, "datamaps.json"), "r") as f:
                 self.data_maps = json.load(f)
 
@@ -119,7 +120,7 @@ class ItemData(Dataset):
         img_model = CLIPImageEncoder(device=self.device)
         
         image_features = []
-        batch_size = 128
+        batch_size = 256
         
         for i in tqdm(range(0, len(self), batch_size)):
             batch_end = min(i + batch_size, len(self))
@@ -286,7 +287,7 @@ class SeqData(Dataset):
         img_model = CLIPImageEncoder(device=self.device)
         
         image_features = []
-        batch_size = 128
+        batch_size = 256
         id2item_keys = list(self.data_maps["id2item"].keys())
         
         for i in tqdm(range(0, self.item_data.shape[0], batch_size)):

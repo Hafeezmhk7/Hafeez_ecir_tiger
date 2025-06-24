@@ -7,7 +7,7 @@ import time
 from accelerate import Accelerator
 from data.processed import ItemData, RecDataset, SeqData
 from data.utils import batch_to, cycle, next_batch, describe_dataloader
-from evaluate.metrics import TopKAccumulator, FairnessAccumulator
+from evaluate.metrics import TopKAccumulator, SemanticCoverageAccumulator, UserFairnessAccumulator, compute_user_activity_groups
 from modules.model import EncoderDecoderRetrievalModel
 from modules.tokenizer.semids import SemanticIdTokenizer
 from modules.utils import compute_debug_metrics, parse_config, display_args, display_metrics, display_model_summary, set_seed
@@ -62,34 +62,11 @@ def clamp_ids(tokenized_data, valid_max):
 
 
 def evaluate(model, test_dataloader, device, tokenizer, 
-             metrics_accumulator, fairness_accumulator,
-             item_dataset, 
-             use_image_features):
+             metrics_accumulator, coverage_accumulator, 
+             fairness_accumulator):
     # set model to evaluation mode
     model.eval()
-    total_loss = 0
-    debug_metrics = []
-    num_batches = 0
     pbar = tqdm(test_dataloader, desc=f"Eval")
-    
-    # setup fairness accumulator
-    item_brand_mapping = None
-    if fairness_accumulator is not None:
-        item_brand_mapping = create_item_brand_mapping(tokenizer, item_dataset)
-        
-        if item_brand_mapping:
-            try:
-                if hasattr(item_dataset, 'data') and 'brand_mapping' in item_dataset.data:
-                    brand_mapping = item_dataset.data['brand_mapping']
-                else:
-                    brand_ids = set(item_dataset.item_brand_id[item_dataset.item_brand_id >= 0])
-                    brand_mapping = {brand_id: f"Brand_{brand_id}" for brand_id in brand_ids}
-                
-                fairness_accumulator.set_brand_mappings(item_brand_mapping, brand_mapping)
-                fairness_accumulator.set_auto_groups(dataset_folder=None, dataset_split=None)
-                logger.info("Fairness accumulator configured with brand mappings")
-            except Exception as e:
-                logger.warning(f"Could not configure fairness accumulator: {e}")
                 
     for batch in pbar:
         data = batch_to(batch, device)
@@ -97,17 +74,7 @@ def evaluate(model, test_dataloader, device, tokenizer,
         # clamp semids
         valid_max = model.num_embeddings - 1
         tokenized_data = clamp_ids(tokenized_data, valid_max)
-        model.enable_generation = False
-        # debug metrics
-        with torch.no_grad():
-            model_output_eval = model(tokenized_data)
-            loss = model_output_eval.loss.detach().cpu().item()
-            total_loss += loss
-            num_batches += 1
-            eval_debug_metrics = compute_debug_metrics(
-                tokenized_data, model_output_eval, "eval"
-            )
-            debug_metrics.append(eval_debug_metrics)
+
         # eval metrics
         model.enable_generation = True
         generated = model.generate_next_sem_id(
@@ -118,31 +85,36 @@ def evaluate(model, test_dataloader, device, tokenizer,
         metrics_accumulator.accumulate(
             actual=actual, top_k=top_k, tokenizer=tokenizer
         )
-        # calculte fairness metrics
+        # calculate semantic coverage metrics using tokenizer catalog (item and brand coverage)
+        coverage_accumulator.accumulate(
+            actual=actual, 
+            top_k=top_k, 
+            user_ids=tokenized_data.user_ids
+        )
+        # calculate user fairness metrics based on activity groups
         fairness_accumulator.accumulate(
-                    actual=actual, 
-                    top_k=top_k, 
-                    user_ids=tokenized_data.user_ids,
-                    performance_scores=None,
-                    item_brand_mapping=item_brand_mapping)
+            actual=actual, 
+            top_k=top_k, 
+            user_ids=tokenized_data.user_ids,
+            tokenizer=tokenizer
+        )
         
+    # compute standard IR metrics
     eval_metrics = metrics_accumulator.reduce()
     eval_metrics = {f"metrics/{k}": v for k, v in eval_metrics.items()}
     # reset the metrics accumulator
     metrics_accumulator.reset()
     
-    fairness_metrics = fairness_accumulator.reduce()
-    fairness_metrics_prefixed = {f"fairness/{k}": v for k, v in fairness_metrics.items()}
-    eval_metrics.update(fairness_metrics_prefixed)
-    fairness_accumulator.reset()
+    # compute semantic coverage metrics with tokenizer catalog (includes both item and brand coverage)
+    coverage_metrics = coverage_accumulator.reduce()
+    coverage_metrics_prefixed = {f"fairness/{k}": v for k, v in coverage_metrics.items()}
+    eval_metrics.update(coverage_metrics_prefixed)
+    coverage_accumulator.reset()
     
-    # average debug metrics
-    averaged_debug_metrics = {}
-    for key in debug_metrics[0].keys():
-        averaged_debug_metrics[key] = sum(d[key] for d in debug_metrics) / num_batches
-
-    averaged_debug_metrics["eval/loss"] = total_loss / num_batches
-    eval_metrics.update(averaged_debug_metrics)
+    # compute user fairness metrics
+    fairness_metrics = fairness_accumulator.reduce()
+    eval_metrics.update(fairness_metrics)
+    fairness_accumulator.reset()
             
     return eval_metrics
 
@@ -181,6 +153,8 @@ def test(
     feature_combination_mode="sum",
     run_prefix="",
     debug=False,
+    rope=False,
+    prefix_matching=False,
 ):
 
     # create logdir if not exists
@@ -199,14 +173,13 @@ def test(
         mixed_precision=mixed_precision_type if amp else "no",
     )
     device = accelerator.device
-    display_args(locals())
-
     if pretrained_rqvae_path is None or pretrained_decoder_path is None:
         logger.error("No pretrained rqvae or decoder path provided. Please provide valid paths to continue training.")
         return
 
     # extract rq-vae uid
     rqvae_uid = pretrained_rqvae_path.split("/")[-2]
+    decoder_uid = pretrained_decoder_path.split("/")[-2]
     
     # logging
     if wandb_logging and accelerator.is_main_process:
@@ -214,14 +187,15 @@ def test(
         params = locals()
         # wandb.login()
         run_name = f"decoder-{dataset.name.lower()}-{dataset_split}" + \
-            "/" + rqvae_uid + "/" + uid
+            "/" + rqvae_uid + "/" + decoder_uid + "/" + uid
         if run_prefix:
             run_name = f"{run_prefix}-{run_name}"
         run = wandb.init(entity="RecSys-UvA",
                          name=run_name,
                          project="gen-ir-decoder-testing",
                          config=params)
-                         
+    display_args(locals())
+
     # load items dataset
     item_dataset = (
         ItemData(
@@ -252,10 +226,17 @@ def test(
         subsample=train_data_subsample,
         split=dataset_split,
         data_split="train",
+        use_image_features=False, # not needed here
+        feature_combination_mode="", # not needed here
+        device=device,
     )
-    train_dataloader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True)
-    train_dataloader = cycle(train_dataloader)
+    
+    logger.info("Computing user activity groups from training data...")
+    user_activity_groups = compute_user_activity_groups(train_dataset)
+    
+    if len(user_activity_groups) == 0:
+        logger.error("Failed to compute user activity groups! User fairness metrics will be skipped.")
+        user_activity_groups = {}
 
     # load test dataset
     test_dataset = SeqData(
@@ -264,15 +245,17 @@ def test(
         subsample=False,
         split=dataset_split,
         data_split="test",
+        use_image_features=use_image_features,
+        feature_combination_mode=feature_combination_mode,
+        device=device,
     )
     test_dataloader = DataLoader(
         test_dataset, batch_size=batch_size, shuffle=True)
     describe_dataloader(test_dataloader, title="Test DataLoader Summary")
-    train_dataloader, test_dataloader = accelerator.prepare(
-        train_dataloader, test_dataloader
-    )
+    test_dataloader = accelerator.prepare(test_dataloader)
 
     # load rq-vae tokenizer
+    # tokenizer will create both semantic ID mappings and brand mappings during precompute_corpus_ids
     tokenizer = SemanticIdTokenizer(
         input_dim=vae_input_dim,
         hidden_dims=vae_hidden_dims,
@@ -284,8 +267,10 @@ def test(
         rqvae_codebook_normalize=vae_codebook_normalize,
         rqvae_sim_vq=vae_sim_vq,
     )
+    # This creates both cached_ids and map_to_category (semantic_id -> brand_id mapping)
     tokenizer = accelerator.prepare(tokenizer)
     tokenizer.precompute_corpus_ids(item_dataset)
+    tokenizer.cached_ids = tokenizer.cached_ids.to(device)
 
     # load model
     model = EncoderDecoderRetrievalModel(
@@ -299,6 +284,8 @@ def test(
         sem_id_dim=tokenizer.sem_ids_dim,
         max_pos=train_dataset.max_seq_len * tokenizer.sem_ids_dim,
         jagged_mode=model_jagged_mode,
+        rope=rope,
+        prefix_matching=prefix_matching,
     )
     display_model_summary(model, device)
 
@@ -308,22 +295,41 @@ def test(
         checkpoint = torch.load(
             pretrained_decoder_path, map_location=device, weights_only=False
         )
-        model.load_state_dict(checkpoint["model"])
+        # filter out breaking useless weights "tte_fut.*"
+        filtered_state_dict = {
+            k: v for k, v in checkpoint["model"].items()
+            if not k.startswith("tte_fut")
+        }
+        model.load_state_dict(filtered_state_dict, strict=True)
     else:
         logger.error("No pretrained decoder path provided. Please provide a valid path to continue testing.")
         return
 
     model = accelerator.prepare(model)
 
+    # initialize metrics accumulators
     metrics_accumulator = TopKAccumulator(ks=[1, 5, 10])
-    fairness_accumulator = FairnessAccumulator(ks=[1, 5, 10])
+    coverage_accumulator = SemanticCoverageAccumulator(tokenizer, ks=[1, 5, 10])
+    fairness_accumulator = UserFairnessAccumulator(user_activity_groups, ks=[1, 5, 10])
+    
+    # log setup information
+    logger.info(f"Metrics Setup:")
+    logger.info(f"  - Standard IR metrics: NDCG@k, HR@k")
+    logger.info(f"  - Item catalog size: {coverage_accumulator.get_catalog_size()}")
+    logger.info(f"  - Brand catalog size: {coverage_accumulator.get_brand_catalog_size()}")
+    logger.info(f"  - Semantic ID -> Brand mapping available: {hasattr(tokenizer, 'map_to_category')}")
+    
+    # log fairness setup
+    logger.info(f"User Fairness Setup:")
+    logger.info(f"  - Activity-based grouping (Ekstrand et al., 2018)")
+    logger.info(f"  - Statistical parity using NDCG@k (Burke et al., 2018)")
+    logger.info(f"  - User groups: {len(user_activity_groups)} users mapped")
     
     # starting the testing
     logger.info(f"Testing Started! - Debugging: {debug}")
     eval_log = evaluate(model, test_dataloader, device, tokenizer, 
-                        metrics_accumulator, fairness_accumulator, 
-                        item_dataset,
-                        use_image_features)
+                        metrics_accumulator, coverage_accumulator,
+                        fairness_accumulator)
     
     # print eval metrics
     display_metrics(eval_log, title="Testing Metrics")
