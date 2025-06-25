@@ -10,6 +10,8 @@ from rich.console import Console
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '..')))
 from modules.utils import display_args
 import requests
+from PIL import Image
+from io import BytesIO
 from tqdm import tqdm
 import pandas as pd
 import argparse
@@ -60,9 +62,11 @@ def download_image(row, save_folder):
     try:
         response = requests.get(url, timeout=15)
         response.raise_for_status()
-        # write the image to the specified path
-        with open(file_path, 'wb') as f:
-            f.write(response.content)
+        # write the image to the specified path (post proper conversion)
+        image = Image.open(BytesIO(response.content)).convert("RGB")
+        image.save(file_path, "JPEG")
+        # with open(file_path, 'wb') as f:
+        #     f.write(response.content)
         return True
     except Exception as e:
         print(f"Failed to download {url}: {e}")

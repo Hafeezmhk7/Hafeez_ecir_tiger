@@ -186,7 +186,7 @@ def test(
         # get local scope parameters for logging
         params = locals()
         # wandb.login()
-        run_name = f"decoder-{dataset.name.lower()}-{dataset_split}" + \
+        run_name = f"{dataset.name.lower()}-{dataset_split}" + \
             "/" + rqvae_uid + "/" + decoder_uid + "/" + uid
         if run_prefix:
             run_name = f"{run_prefix}-{run_name}"
