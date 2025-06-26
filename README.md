@@ -3,7 +3,7 @@
 
 ## 🧑‍💻 Team Members
 - Aswin Krishna Mahadevan
-- Meher Changalani  
+- Meher Changlani  
 - Mohammad Hafeez Khan  
 - Udit Thakur  
 
@@ -65,8 +65,7 @@ sbatch run job_scripts/test_decoder.job
 ├── metrics/               # Stored evaluation results (e.g., Recall, Fairness)
 ├── modules/               # Core model components (encoder, quantizer, transformer, etc.)
 ├── notebooks/             # Jupyter notebooks for analysis and preprocessing
-├── ops/                   # Triton or low-level optimization kernels
-├── wandb/                 # Logging directory (auto-created by Weights & Biases)
+├── ops/                   # Triton for jagged transformer integration
 ├── train_rqvae.py         # Script to train the RQ-VAE model
 ├── train_decoder.py       # Script to train the Transformer decoder
 ├── test_decoder.py        # Script to evaluate the decoder
