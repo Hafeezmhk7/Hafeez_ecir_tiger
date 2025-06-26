@@ -17,3 +17,5 @@ rich==14.0.0
 clip==0.2.0
 datasets==3.6.0
 xxhash==3.5.0
+matplotlib==3.9.4
+seaborn==0.13.2
