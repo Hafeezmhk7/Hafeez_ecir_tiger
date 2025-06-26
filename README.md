@@ -267,7 +267,7 @@ Compared to recent multimodal generative models like MMGRec [6] and MQL4GRec [7]
 
 ## 📚 References
 
-[1] Rajput, S., Mehta, N., Singh, A., Keshavan, R. H., Vu, T., Heldt, L., … Sathiamoorthy, M. (2023). Recommender Systems with Generative Retrieval. arXiv [Cs.IR]. Retrieved from http://arxiv.org/abs/2305.05065  
+[1] Rajput, S., Mehta, N., Singh, A., Keshavan, R.H., Vu, T., Heldt, L., Hong, L., Tay, Y., Tran, V.Q., Samost, J., Kula, M., Chi, E.H., Sathiamoorthy, M.: Recommender systems with generative retrieval (2023), https://arxiv.org/abs/2305.05065
 
 [2] McAuley, J., Targett, C., Shi, Q., van den Hengel, A.: Image-based recommendations on styles and substitutes (2015), https://arxiv.org/abs/1506.04757  
 
