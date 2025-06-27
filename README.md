@@ -199,7 +199,6 @@ This approach enables open-ended, generative recommendation without relying on f
 
 We evaluate models using both traditional recommendation metrics and extended fairness/diversity metrics to assess effectiveness and societal implications of generative retrieval.
 
-### Evaluation Metrics
 
 | **Metric**                  | **Description**                                                                 | **Why Appropriate**                                                                                  |
 |----------------------------|---------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------|
