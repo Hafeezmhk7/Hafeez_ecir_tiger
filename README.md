@@ -33,7 +33,7 @@ Get your key from: [link](https://wandb.ai/authorize)
 wandb login <API Key>
 ```
 
-### 4. Dataset Downloading & Processing
+### 3. Dataset Downloading & Processing
 
 ```bash
 # change directory
@@ -91,7 +91,7 @@ sbatch run job_scripts/test_decoder.job
 ```
 
 
-## 📊 Weights & Biases Dashboard
+## 📊 Weights & Biases Results Dashboard
 - RQ-VAE Training Report: [link](https://wandb.ai/RecSys-UvA/rq-vae-training/reports/RQ-VAE-Training-Report--VmlldzoxMzM2NjQ5MA?accessToken=ycktjvkde9hfnfv7gz7zlkcjqtsl4pr2c1x3sy65megn49yebpi9nu3vwjzwcpt3)
 - Decoder Training and Testing Report: [link](https://api.wandb.ai/links/RecSys-UvA/ofxtg8fq)
 - Decoder Testing Only Report: [link](https://wandb.ai/RecSys-UvA/gen-ir-decoder-testing/reports/Decoder-Testing-Report--VmlldzoxMzM2NjQ1Mw?accessToken=r3cvpvonokw0kbslg5bt10kht3yf8chxhk7gjkpi2dt56wwaw9mstsn9qgwo2o96)
@@ -120,7 +120,8 @@ sbatch run job_scripts/test_decoder.job
 ```
 
 ## 🧾 Project Abstract
-_Provide a concise summary of your project, including the type of recommender system you're building, the key techniques used, and a brief two sentence summary of results._
+
+We reproduce TIGER [1], a generative retrieval-based recommender system that formulates recommendation as sequence generation of semantic item IDs. Building on this, we propose TIGRESS, a multimodal extension that integrates CLIP-based image features with text metadata to enrich item representations. Experiments on Amazon Reviews (2014, 2023) show large Recall@5 gains in visually grounded domains (e.g., +251% in Sports), though performance drops in text-heavy categories (e.g., Software). While TIGRESS greatly improves item coverage, it also increases exposure inequality, highlighting the tradeoff between relevance and fairness in generative recommenders.
 
 ---
 
@@ -151,7 +152,7 @@ We implemented and evaluated several extensions to the original TIGER framework:
 * **Fairness and diversity**: Added evaluation of exposure inequality and user fairness to assess beyond accuracy.
 
 ![IR Measures](assets/ir_measures.png)
-*Comparison of TIGER and TIGRESS on diversity metrics at cutoffs 5 and 10 across Amazon (2014) [2] and Amazon (2023) [3] datasets categories*
+*Comparison of TIGER and TIGRESS on on Recall and NDCG at cutoffs 5 and 10 across Amazon (2014) [2] and Amazon (2023) [3] categories.*
 
 These extensions show that multimodal fusion enhances recommendation in visually informative domains while revealing limitations in others.
 
@@ -198,29 +199,16 @@ This approach enables open-ended, generative recommendation without relying on f
 
 We evaluate models using both traditional recommendation metrics and extended fairness/diversity metrics to assess effectiveness and societal implications of generative retrieval.
 
-* **Recall\@K**
-  * **Description**: Measures the fraction of ground-truth relevant items that appear in the top-K generated recommendations.
-  * **Why appropriate**: Captures the model’s ability to retrieve relevant items; essential for evaluating relevance in top-k retrieval scenarios.
+### Evaluation Metrics
 
-* **NDCG\@K (Normalized Discounted Cumulative Gain)**
-  * **Description**: Measures ranking quality by rewarding correct recommendations higher in the list with logarithmic discounting.
-  * **Why appropriate**: Reflects user experience more accurately than Recall by penalizing misordering of relevant items.
-
-* **Item Coverage\@K**
-  * **Description**: Proportion of unique catalog items recommended across all users.
-  * **Why appropriate**: Measures diversity at the catalog level and assesses how widely the system explores the item space.
-
-* **Brand Coverage\@K**
-  * **Description**: Proportion of unique brands represented in recommendations.
-  * **Why appropriate**: Detects brand-level diversity and prevents concentration on a few dominant brands.
-
-* **Gini Coefficient (Exposure Inequality)**
-  * **Description**: Measures inequality in item exposure across the catalog; lower values indicate fairer exposure.
-  * **Why appropriate**: Identifies systemic popularity bias that can harm catalog diversity and niche item visibility.
-
-* **Relative Disparity\@K**
-  * **Description**: Measures fairness across user groups (light, medium, heavy activity) by comparing group-level performance.
-  * **Why appropriate**: Ensures that the recommendation quality is equitable across varying user engagement levels.
+| **Metric**                  | **Description**                                                                 | **Why Appropriate**                                                                                  |
+|----------------------------|---------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------|
+| **Recall@K**               | Fraction of ground-truth relevant items in the top-K recommendations.           | Captures model’s ability to retrieve relevant items; key for top-K retrieval relevance.              |
+| **NDCG@K (Normalized Discounted Cumulative Gain)**                 | Rewards higher-ranked correct recommendations with logarithmic discounting.     | Reflects user experience better than Recall by penalizing misordering of relevant items.             |
+| **ItemCoverage@K**        | Proportion of unique catalog items recommended across all users.                | Measures catalog-level diversity and how broadly the system explores the item space.                 |
+| **BrandCoverage@K**       | Proportion of unique brands represented in recommendations.                     | Detects brand-level diversity and reduces concentration on dominant brands.                          |
+| **Gini@K**       | Measures inequality in item exposure; lower values indicate fairer exposure.    | Identifies popularity bias that reduces visibility of niche or less popular items.                   |
+| **RelativeDisparity@K**   | Compares group-level performance across user segments (light, medium, heavy).   | Evaluates fairness in recommendation quality for different levels of user engagement.                |
 
 Each metric is selected to assess different dimensions of system quality: relevance, diversity, exposure fairness, and user equity.
 
