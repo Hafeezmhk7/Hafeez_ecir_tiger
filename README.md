@@ -128,7 +128,7 @@ We reproduce TIGER [1], a generative retrieval-based recommender system that for
 ## 📊 Summary of Results
 
 
-### Reproducability 
+### Reproducibility 
 
 We evaluated the reproducibility of three models – SASRec, S³-Rec, and TIGER across three Amazon datasets: Beauty, Sports and Outdoors, and Toys and Games. Our findings are summarized below:
 
