@@ -18,6 +18,7 @@
 ```bash
 conda create -n rq-vae python=3.9
 pip install -r requirements.txt
+conda activate rq-vae
 ```
 
 or using SLURM job
@@ -32,10 +33,53 @@ Get your key from: [link](https://wandb.ai/authorize)
 wandb login <API Key>
 ```
 
-### 3. Run Training and Testing
+### 4. Dataset Downloading & Processing
 
 ```bash
+# change directory
+cd data
+
+# amazon 2014 (auto-downloads (P5 processed data), process splits (train:dev:test), and save)
+python amazon.py --root ../dataset/amazon/2014 --split beauty
+
+# amazon 2023 (auto-downloads (raw data), pre-process (P5), and save)
+python p5.py \
+    --dataset_dir "../dataset/amazon/2023/raw" \
+    --dataset_split "beauty" \
+    --data_type "Amazon"
+
+# process splits (train:dev:test) and save
+python amazon.py --root ../dataset/amazon/2023 --split beauty
+
+# download product images (2014 and 2023)
+python download_product_images.py \
+    --dataset_dir "../dataset/amazon/2023/raw" \
+    --dataset_split "beauty"
+```
+
+### 4. Run Training and Testing
+
+Configs `(configs/*.gin)` can be modified to adapt to different datasets, categories, and other parameters.
+
+For example,
+```python
+train.dataset_folder="dataset/amazon/2014"
+train.dataset_split="beauty"
+train.log_dir="logdir/rqvae/amazon/2014"
+train.wandb_logging=False
+train.use_image_features=False # for CLIP-based semantic ids
+train.feature_combination_mode="" # sum or concat if use_image_features
+train.run_prefix="" # for wandb
+train.pretrained_decoder_path=None
+train.pretrained_rqvae_path=None
+```
+
+To start the training,
+```bash
+# training RQ-VAE
 python train_rqvae.py --config configs/rqvae_amazon.gin
+
+# training Encoder-Decoder-Model
 python train_decoder.py --config configs/decoder_amazon.gin
 ```
 or using SLURM job
@@ -198,7 +242,7 @@ We compare against three sequential recommendation models for reproducibility an
 ### Primary Method
 
 - **TIGRESS** (ours)  
-  A hybrid generative retrieval model that extends TIGER by incorporating richer semantics through multimodal representations and prompt-guided generation. Designed to improve both accuracy and diversity/fairness in recommendations.
+  A hybrid generative retrieval model that extends TIGER by incorporating richer semantics through visual representations and context rich item metadata textual semantics. Designed to improve both accuracy and diversity/fairness in recommendations.
 
 ### Frameworks Used
 
@@ -241,9 +285,9 @@ All models are implemented using **PyTorch**, and we follow original implementat
 - Training and logging handled via PyTorch and [Weights & Biases](https://wandb.ai/).  
 
 **Hyperparameters**  
-- **Decoder**: 200K iterations, LR=0.0003, batch size=256, 10K warm-up steps.  
-- **RQ-VAE**: 400K iterations, LR=0.0005, batch size=64.  
-- Optimizer: AdamW with inverse square root scheduler (decoder only).  
+- **Encoder-Decoder**: 200K iterations, LR=0.0003, batch size=256, 10K warm-up steps.  *(refer: `configs/decoder_amazon.gin`)*
+- **RQ-VAE**: 400K iterations, LR=0.0005, batch size=64. *(refer: `configs/rqvae_amazon.gin`)* 
+- Optimizer: AdamW with inverse square root scheduler (encoder-decoder only).  
 
 
 ---

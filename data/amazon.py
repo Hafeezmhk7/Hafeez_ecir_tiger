@@ -8,6 +8,7 @@ import polars as pl
 import torch
 from tqdm import tqdm
 from collections import defaultdict
+import argparse
 try:
     from data.preprocessing import PreprocessingMixin
 except:
@@ -265,6 +266,9 @@ class AmazonReviews(InMemoryDataset, PreprocessingMixin):
 
 
 if __name__ == "__main__":
-    root = "dataset/amazon/2023"
-    split = "beauty"
-    AmazonReviews(root, split)
+    parser = argparse.ArgumentParser(description="AmazonReviews dataset loader")
+    parser.add_argument('--root', type=str, default='../dataset/amazon/2014', help='Path to the dataset root directory')
+    parser.add_argument('--split', type=str, default='beauty', help='Dataset split to load (e.g., beauty, toys, sports)')
+    args = parser.parse_args()
+
+    AmazonReviews(args.root, args.split)
