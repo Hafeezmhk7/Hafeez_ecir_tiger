@@ -364,7 +364,20 @@ class SeqData(Dataset):
                 if self.feature_combination_mode == "sum":
                     x[valid_item_mask] = x[valid_item_mask] + image_features
                 elif self.feature_combination_mode == "concat":
-                    x = torch.cat([x, image_features], dim=-1)
+                    seq_len, x_dim = x.shape
+                    img_dim = image_features.shape[1]
+                    # allocate new tensor
+                    x_new = torch.zeros(seq_len, x_dim + img_dim, device=x.device, dtype=x.dtype)
+                    # copy valid x
+                    x_valid = x[valid_item_mask]
+                    x_new[valid_item_mask, :x_dim] = x_valid
+                    # copy original x
+                    # x_new[:, :x_dim] = x
+                    # convert image features to same dtype as x
+                    image_features = image_features.to(x.dtype)
+                    # append image features only to valid rows
+                    x_new[valid_item_mask, x_dim:] = image_features
+                    x = x_new
                 else:
                     raise ValueError("Invalid feature combination mode!")
         
