@@ -111,8 +111,21 @@ class ItemData(Dataset):
             with open(os.path.join(self.root, "raw", self.dataset_split, "datamaps.json"), "r") as f:
                 self.data_maps = json.load(f)
 
-            # pre-compute all image features
-            self.image_features = self._precompute_image_features()
+            # image features path
+            features_path = os.path.join(
+                self.root, "processed", f"{self.dataset_split}_{train_test_split}_item_img_feats.pt"
+            )
+            # load pre-computed image features
+            if os.path.exists(features_path) and not force_process:
+                logger.info(f"Loading precomputed image features from {features_path}")
+                self.image_features = torch.load(features_path, map_location="cpu")
+                logger.info(f"Loaded image features {self.image_features.shape}")
+            else:
+                # pre-compute all image features
+                self.image_features = self._precompute_image_features()
+                os.makedirs(os.path.dirname(features_path), exist_ok=True)
+                torch.save(self.image_features, features_path)
+        
 
     def __len__(self):
         return self.item_data.shape[0]
@@ -251,9 +264,21 @@ class SeqData(Dataset):
         if self.use_image_features:
             with open(os.path.join(self.root, "raw", self.dataset_split, "datamaps.json"), "r") as f:
                 self.data_maps = json.load(f)
-
-            # pre-compute all image features
-            self.image_features = self._precompute_image_features()
+                
+            # image features path
+            features_path = os.path.join(
+                self.root, "processed", f"{self.dataset_split}_{self.data_split}_seq_img_feats.pt"
+            )
+            # load pre-computed image features
+            if os.path.exists(features_path) and not force_process:
+                logger.info(f"Loading precomputed image features from {features_path}")
+                self.image_features = torch.load(features_path, map_location="cpu")
+                logger.info(f"Loaded image features {self.image_features.shape}")
+            else:
+                # pre-compute all image features
+                self.image_features = self._precompute_image_features()
+                os.makedirs(os.path.dirname(features_path), exist_ok=True)
+                torch.save(self.image_features, features_path)
 
     @property
     def max_seq_len(self):
