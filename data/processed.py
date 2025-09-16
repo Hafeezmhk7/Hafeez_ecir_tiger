@@ -193,19 +193,44 @@ class ItemData(Dataset):
                 x = x + image_features
             elif self.feature_combination_mode == "concat":
                 x = torch.cat([x, image_features], dim=-1)
+            elif self.feature_combination_mode == "individual_signals":
+                # NEW: Return separate text and image features for cross-attention
+                from data.schemas import MultimodalSeqBatch
+                
+                # Ensure proper dimensions for single items
+                if x.dim() == 1:
+                    x = x.unsqueeze(0)  # [1, 768]
+                if image_features.dim() > x.dim():
+                    image_features = image_features.squeeze(0)
+                if image_features.dim() == 1:
+                    image_features = image_features.unsqueeze(0)  # [1, image_dim]
+                
+                return MultimodalSeqBatch(
+                    user_ids=-1 * torch.ones_like(item_ids.squeeze(0)),
+                    ids=item_ids,
+                    ids_fut=-1 * torch.ones_like(item_ids.squeeze(0)),
+                    x_text=x.squeeze(0),  # [768] for single item
+                    x_image=image_features.squeeze(0),  # [image_dim] for single item
+                    x_fut_text=-1 * torch.ones(x.shape[-1]),  # [768]
+                    x_fut_image=-1 * torch.ones(image_features.shape[-1]),  # [image_dim]
+                    x_brand_id=x_brand_id,
+                    x_fut_brand_id=-1 * torch.ones_like(x_brand_id),
+                    seq_mask=torch.ones_like(item_ids, dtype=bool),
+                )
             else:
-                raise ValueError("Invalid feature combination mode!")
+                raise ValueError(f"Invalid feature combination mode: {self.feature_combination_mode}")
 
-        return SeqBatch(
-            user_ids=-1 * torch.ones_like(item_ids.squeeze(0)),
-            ids=item_ids,
-            ids_fut=-1 * torch.ones_like(item_ids.squeeze(0)),
-            x=x,
-            x_brand_id=x_brand_id,
-            x_fut=-1 * torch.ones_like(item_ids.squeeze(0)),
-            x_fut_brand_id=-1 * torch.ones_like(item_ids.squeeze(0)),
-            seq_mask=torch.ones_like(item_ids, dtype=bool),
-        )
+            # Return traditional SeqBatch for sum/concat modes
+            return SeqBatch(
+                user_ids=-1 * torch.ones_like(item_ids.squeeze(0)),
+                ids=item_ids,
+                ids_fut=-1 * torch.ones_like(item_ids.squeeze(0)),
+                x=x,  # Combined features for traditional modes
+                x_brand_id=x_brand_id,
+                x_fut=-1 * torch.ones_like(item_ids.squeeze(0)),
+                x_fut_brand_id=-1 * torch.ones_like(item_ids.squeeze(0)),
+                seq_mask=torch.ones_like(item_ids, dtype=bool),
+            )
 
 
 class SeqData(Dataset):
@@ -383,42 +408,55 @@ class SeqData(Dataset):
         
         # use pre-computed image features
         if self.use_image_features and self.image_features is not None:
-            valid_item_mask = item_ids >= 0
-            if valid_item_mask.any():
-                image_features = self.image_features[item_ids[valid_item_mask]].to(x.device)
-                if self.feature_combination_mode == "sum":
-                    x[valid_item_mask] = x[valid_item_mask] + image_features
-                elif self.feature_combination_mode == "concat":
-                    seq_len, x_dim = x.shape
-                    img_dim = image_features.shape[1]
-                    # allocate new tensor
-                    x_new = torch.zeros(seq_len, x_dim + img_dim, device=x.device, dtype=x.dtype)
-                    # copy valid x
-                    x_valid = x[valid_item_mask]
-                    x_new[valid_item_mask, :x_dim] = x_valid
-                    # copy original x
-                    # x_new[:, :x_dim] = x
-                    # convert image features to same dtype as x
-                    image_features = image_features.to(x.dtype)
-                    # append image features only to valid rows
-                    x_new[valid_item_mask, x_dim:] = image_features
-                    x = x_new
-                else:
-                    raise ValueError("Invalid feature combination mode!")
-        
-        # masking invalid ids    
-        x[item_ids == -1] = -1
+            if isinstance(idx, (int, np.integer)):
+                image_features = self.image_features[idx:idx+1].to(x.device)
+            else:
+                image_features = self.image_features[idx].to(x.device)
+            
+            # add image features to x
+            if self.feature_combination_mode == "sum":
+                x = x.unsqueeze(0) if x.dim() == 1 else x
+                x = x + image_features
+            elif self.feature_combination_mode == "concat":
+                x = torch.cat([x, image_features], dim=-1)
+            elif self.feature_combination_mode == "individual_signals":
+                # NEW: Return separate text and image features for cross-attention
+                from data.schemas import MultimodalSeqBatch
+                
+                # Ensure proper dimensions for single items
+                if x.dim() == 1:
+                    x = x.unsqueeze(0)  # [1, 768]
+                if image_features.dim() > x.dim():
+                    image_features = image_features.squeeze(0)
+                if image_features.dim() == 1:
+                    image_features = image_features.unsqueeze(0)  # [1, image_dim]
+                
+                return MultimodalSeqBatch(
+                    user_ids=-1 * torch.ones_like(item_ids.squeeze(0)),
+                    ids=item_ids,
+                    ids_fut=-1 * torch.ones_like(item_ids.squeeze(0)),
+                    x_text=x.squeeze(0),  # [768] for single item
+                    x_image=image_features.squeeze(0),  # [image_dim] for single item
+                    x_fut_text=-1 * torch.ones(x.shape[-1]),  # [768]
+                    x_fut_image=-1 * torch.ones(image_features.shape[-1]),  # [image_dim]
+                    x_brand_id=x_brand_id,
+                    x_fut_brand_id=-1 * torch.ones_like(x_brand_id),
+                    seq_mask=torch.ones_like(item_ids, dtype=bool),
+                )
+            else:
+                raise ValueError(f"Invalid feature combination mode: {self.feature_combination_mode}")
 
-        return SeqBatch(
-            user_ids=user_ids,
-            ids=item_ids,
-            ids_fut=item_ids_fut,
-            x=x,
-            x_brand_id=-1 * torch.ones_like(item_ids.squeeze(0)),
-            x_fut=x_fut,
-            x_fut_brand_id=-1 * torch.ones_like(item_ids.squeeze(0)),
-            seq_mask=(item_ids >= 0),
-        )
+            # Return traditional SeqBatch for sum/concat modes
+            return SeqBatch(
+                user_ids=-1 * torch.ones_like(item_ids.squeeze(0)),
+                ids=item_ids,
+                ids_fut=-1 * torch.ones_like(item_ids.squeeze(0)),
+                x=x,  # Combined features for traditional modes
+                x_brand_id=x_brand_id,
+                x_fut=-1 * torch.ones_like(item_ids.squeeze(0)),
+                x_fut_brand_id=-1 * torch.ones_like(item_ids.squeeze(0)),
+                seq_mask=torch.ones_like(item_ids, dtype=bool),
+            )
 
 
 if __name__ == "__main__":

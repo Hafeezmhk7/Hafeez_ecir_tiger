@@ -94,3 +94,63 @@ def describe_dataloader(dataloader, batch_sampler=None, title="DataLoader Summar
         table.add_row("Sample inspection error", str(e))
 
     console.print(table)
+
+
+# =============================================================================
+# MULTIMODAL BATCH UTILITIES - CROSS-ATTENTION EXTENSION
+# =============================================================================
+
+def multimodal_collate_fn(batch_list):
+    """
+    Custom collate function that handles both SeqBatch and MultimodalSeqBatch.
+    Use this when feature_combination_mode="individual_signals"
+    """
+    if len(batch_list) == 0:
+        return None
+        
+    first_item = batch_list[0]
+    
+    # Import here to avoid circular imports
+    from data.schemas import MultimodalSeqBatch
+    
+    if isinstance(first_item, MultimodalSeqBatch):
+        # Stack multimodal batches
+        try:
+            return MultimodalSeqBatch(
+                user_ids=torch.stack([b.user_ids for b in batch_list]),
+                ids=torch.stack([b.ids for b in batch_list]),
+                ids_fut=torch.stack([b.ids_fut for b in batch_list]),
+                x_text=torch.stack([b.x_text for b in batch_list]),
+                x_image=torch.stack([b.x_image for b in batch_list]),
+                x_fut_text=torch.stack([b.x_fut_text for b in batch_list]),
+                x_fut_image=torch.stack([b.x_fut_image for b in batch_list]),
+                x_brand_id=torch.stack([b.x_brand_id for b in batch_list]),
+                x_fut_brand_id=torch.stack([b.x_fut_brand_id for b in batch_list]),
+                seq_mask=torch.stack([b.seq_mask for b in batch_list]),
+            )
+        except Exception as e:
+            logger.error(f"Error collating multimodal batch: {e}")
+            logger.error(f"First item types: {[(k, type(v), getattr(v, 'shape', 'no shape')) for k, v in first_item._asdict().items()]}")
+            raise
+    else:
+        # Use default collate for SeqBatch
+        from torch.utils.data.dataloader import default_collate
+        return default_collate(batch_list)
+
+def multimodal_batch_to(batch, device):
+    """
+    Move batch to device, handling both SeqBatch and MultimodalSeqBatch
+    """
+    from data.schemas import MultimodalSeqBatch
+    
+    if isinstance(batch, MultimodalSeqBatch):
+        return MultimodalSeqBatch(*[v.to(device) if hasattr(v, 'to') else v for v in batch])
+    else:
+        return SeqBatch(*[v.to(device) if hasattr(v, 'to') else v for v in batch])
+
+def next_multimodal_batch(dataloader, device):
+    """
+    Updated batch getter that handles multimodal batches
+    """
+    batch = next(dataloader)
+    return multimodal_batch_to(batch, device)
